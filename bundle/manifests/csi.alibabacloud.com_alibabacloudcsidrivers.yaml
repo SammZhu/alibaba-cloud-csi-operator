@@ -20,6 +20,9 @@ spec:
     - jsonPath: .status.diskDriverReady
       name: DiskReady
       type: boolean
+    - jsonPath: .status.nasDriverReady
+      name: NASReady
+      type: boolean
     - jsonPath: .status.conditions[?(@.type=='Available')].status
       name: Available
       type: string
@@ -129,6 +132,22 @@ spec:
                     description: Enabled controls whether the disk CSI driver components
                       are deployed.
                     type: boolean
+                  snapshot:
+                    description: Snapshot configures VolumeSnapshot support. Requires
+                      snapshot.storage.k8s.io CRDs.
+                    properties:
+                      className:
+                        description: |-
+                          ClassName is the name of the VolumeSnapshotClass to create.
+                          Defaults to "alibaba-cloud-disk-snapclass".
+                        type: string
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled controls whether a VolumeSnapshotClass is created. Requires the
+                          snapshot.storage.k8s.io CRDs to be installed on the cluster.
+                        type: boolean
+                    type: object
                   storageClasses:
                     description: StorageClasses is the list of StorageClass objects
                       to create.
@@ -140,6 +159,10 @@ spec:
                           default: true
                           description: AllowVolumeExpansion enables online volume
                             expansion. Defaults to true.
+                          type: boolean
+                        encrypted:
+                          description: Encrypted enables server-side disk encryption
+                            at rest.
                           type: boolean
                         name:
                           description: Name is the StorageClass name, e.g. alicloud-disk-efficiency.
@@ -156,12 +179,43 @@ spec:
                           description: Type is the Alibaba Cloud disk type, e.g. cloud_efficiency,
                             cloud_essd.
                           type: string
+                        virtDefault:
+                          description: |-
+                            VirtDefault annotates this StorageClass as the default for OpenShift Virtualization (OKV/KubeVirt).
+                            Sets the storageclass.kubevirt.io/is-default-virt-class: "true" annotation.
+                          type: boolean
                       required:
                       - name
                       - type
                       type: object
                     minItems: 1
                     type: array
+                  storageProfile:
+                    description: StorageProfile configures automatic CDI StorageProfile
+                      patching for OKV compatibility.
+                    properties:
+                      cloneStrategy:
+                        description: |-
+                          CloneStrategy specifies the CDI clone strategy. Defaults to "csi-clone".
+                          Valid values match CDICloneStrategy in the CDI API (cdi.kubevirt.io/v1beta1):
+                            csi-clone    — zero-copy CSI volume clone (fastest, preferred)
+                            snapshot     — VolumeSnapshot-based copy (requires VolumeSnapshotClass)
+                            copy         — host-assisted data copy through a pod (slowest, always works)
+                        enum:
+                        - csi-clone
+                        - snapshot
+                        - copy
+                        type: string
+                      patch:
+                        default: false
+                        description: |-
+                          Patch enables automatic patching of the CDI StorageProfile object for
+                          this StorageClass. When true the operator sets the recommended
+                          claimPropertySets and cloneStrategy so that KubeVirt DataVolumes work
+                          correctly without manual intervention. The patch is skipped silently
+                          if CDI is not installed.
+                        type: boolean
+                    type: object
                 required:
                 - enabled
                 type: object
@@ -171,14 +225,86 @@ spec:
                   tag to deploy, e.g. v1.35.3.
                 type: string
               nas:
-                description: NAS configures the Alibaba Cloud NAS file-storage CSI
-                  driver. Disabled by default (Phase 2).
+                description: |-
+                  NAS configures the Alibaba Cloud NAS file-storage CSI driver.
+                  NAS provides ReadWriteMany volumes required for OpenShift Virtualization live migration.
                 properties:
                   enabled:
                     default: false
                     description: Enabled controls whether the NAS CSI driver components
                       are deployed.
                     type: boolean
+                  storageClasses:
+                    description: StorageClasses is the list of NAS StorageClass objects
+                      to create.
+                    items:
+                      description: NASStorageClassSpec defines a StorageClass to be
+                        created for NAS volumes.
+                      properties:
+                        allowVolumeExpansion:
+                          default: true
+                          description: AllowVolumeExpansion enables online volume
+                            expansion. Defaults to true.
+                          type: boolean
+                        mountProtocol:
+                          default: nfs
+                          description: MountProtocol is the mount protocol, either
+                            "nfs" (default) or "cnfs".
+                          enum:
+                          - nfs
+                          - cnfs
+                          type: string
+                        name:
+                          description: Name is the StorageClass name, e.g. alicloud-nas-standard.
+                          type: string
+                        reclaimPolicy:
+                          default: Delete
+                          description: ReclaimPolicy controls what happens to the
+                            PV when the PVC is deleted. Defaults to Delete.
+                          enum:
+                          - Delete
+                          - Retain
+                          type: string
+                        storageType:
+                          description: StorageType is the NAS storage type, e.g. standard,
+                            performance.
+                          type: string
+                        virtDefault:
+                          description: |-
+                            VirtDefault annotates this StorageClass as the default for OpenShift Virtualization (OKV/KubeVirt).
+                            NAS provides ReadWriteMany required for live VM migration.
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  storageProfile:
+                    description: |-
+                      StorageProfile configures automatic CDI StorageProfile patching for OKV compatibility.
+                      NAS profiles use ReadWriteMany + Filesystem to support live VM migration.
+                    properties:
+                      cloneStrategy:
+                        description: |-
+                          CloneStrategy specifies the CDI clone strategy. Defaults to "csi-clone".
+                          Valid values match CDICloneStrategy in the CDI API (cdi.kubevirt.io/v1beta1):
+                            csi-clone    — zero-copy CSI volume clone (fastest, preferred)
+                            snapshot     — VolumeSnapshot-based copy (requires VolumeSnapshotClass)
+                            copy         — host-assisted data copy through a pod (slowest, always works)
+                        enum:
+                        - csi-clone
+                        - snapshot
+                        - copy
+                        type: string
+                      patch:
+                        default: false
+                        description: |-
+                          Patch enables automatic patching of the CDI StorageProfile object for
+                          this StorageClass. When true the operator sets the recommended
+                          claimPropertySets and cloneStrategy so that KubeVirt DataVolumes work
+                          correctly without manual intervention. The patch is skipped silently
+                          if CDI is not installed.
+                        type: boolean
+                    type: object
                 required:
                 - enabled
                 type: object

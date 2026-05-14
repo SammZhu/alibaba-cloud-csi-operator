@@ -1,135 +1,144 @@
 # alibaba-cloud-csi-operator
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+OLM Operator that installs and manages [Alibaba Cloud CSI Driver](https://github.com/kubernetes-sigs/alibaba-cloud-csi-driver)
+on OpenShift clusters running in **External Platform** mode.
 
-## Getting Started
+## Overview
+
+When OpenShift runs in External Platform mode, no cloud-provider CSI driver is installed automatically.
+This operator fills that gap — it deploys and reconciles all CSI components declaratively through a
+single `AlibabaCloudCSIDriver` custom resource.
+
+| Phase | Storage type | Status |
+|-------|-------------|--------|
+| P1    | Disk (cloud_efficiency, cloud_essd) | ✅ Implemented |
+| P2    | NAS file storage | 🔜 Planned |
+| P3    | OSS object storage | 🔜 Planned |
+
+## Architecture
+
+```
+CatalogSource (OLM)
+  └─ Subscription → InstallPlan
+       └─ alibaba-cloud-csi-operator Pod
+            └─ watches AlibabaCloudCSIDriver CR
+                 ├─ CSIDriver object
+                 ├─ ServiceAccount + ClusterRole + ClusterRoleBinding
+                 ├─ SCC privileged binding (OpenShift)
+                 ├─ CSI Controller Deployment (control-plane nodes)
+                 ├─ CSI Node DaemonSet (all nodes, privileged)
+                 └─ StorageClass objects
+```
+
+## Custom Resource
+
+```yaml
+apiVersion: csi.alibabacloud.com/v1alpha1
+kind: AlibabaCloudCSIDriver
+metadata:
+  name: cluster          # singleton, always use this name
+  namespace: kube-system
+spec:
+  disk:
+    enabled: true
+    defaultStorageClass: true
+    storageClasses:
+      - name: alicloud-disk-efficiency
+        type: cloud_efficiency
+        reclaimPolicy: Delete
+        allowVolumeExpansion: true
+      - name: alicloud-disk-essd
+        type: cloud_essd
+        reclaimPolicy: Delete
+        allowVolumeExpansion: true
+  nas:
+    enabled: false
+  oss:
+    enabled: false
+  imageTag: v1.35.3          # upstream kubernetes-sigs/alibaba-cloud-csi-driver tag
+  auth:
+    ramToken: v2             # ECS instance metadata IMDSv2, no AK/SK needed
+  controller:
+    replicas: 2
+    nodeSelector:
+      node-role.kubernetes.io/master: ""
+    tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+```
+
+## Authentication
+
+The operator uses **RAM Role Instance Principal** — no AK/SK required:
+- ECS nodes must have a RAM Role attached with disk-related permissions.
+- The CSI driver fetches temporary tokens from the ECS instance metadata endpoint automatically.
+
+Required RAM policy actions on the node RAM Role:
+```
+ecs:AttachDisk, ecs:DetachDisk, ecs:DescribeDisks, ecs:CreateDisk, ecs:DeleteDisk,
+ecs:ResizeDisk, ecs:CreateSnapshot, ecs:DeleteSnapshot, ecs:DescribeSnapshots,
+ecs:CreateAutoSnapshotPolicy, ecs:ApplyAutoSnapshotPolicy, ecs:DeleteAutoSnapshotPolicy,
+ecs:DescribeAutoSnapshotPolicyEx, ecs:ModifyDiskAttribute
+```
+
+## OLM Install (via CatalogSource)
+
+Apply these manifests at install-time (or via `extraManifests` in install-config):
+
+```bash
+# 1. CatalogSource — register the operator catalog
+kubectl apply -f 04-csi-catalogsource.yaml
+
+# 2. OperatorGroup — scope to kube-system
+kubectl apply -f 04-csi-operatorgroup.yaml
+
+# 3. Subscription — trigger OLM install
+kubectl apply -f 04-csi-subscription.yaml
+
+# 4. CR — configure the CSI driver (after operator Pod is Running)
+kubectl apply -f 04-csi-driver-cr.yaml
+```
+
+## Build
 
 ### Prerequisites
-- go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+- Go 1.24+
+- operator-sdk v1.42.2
+- Docker / Podman
 
-```sh
-make docker-build docker-push IMG=<some-registry>/alibaba-cloud-csi-operator:tag
+### Three-layer image build
+
+```bash
+# 1. Operator image
+make docker-build docker-push IMG=quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3
+
+# 2. Bundle image (OLM metadata + CSV)
+make bundle-build bundle-push \
+  BUNDLE_IMG=quay.io/samzhu/alibaba-cloud-csi-operator-bundle:v1.35.3
+
+# 3. Catalog image
+make catalog-build catalog-push \
+  CATALOG_IMG=quay.io/samzhu/alibaba-cloud-csi-operator-catalog:latest \
+  BUNDLE_IMGS=quay.io/samzhu/alibaba-cloud-csi-operator-bundle:v1.35.3
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+### Local development
 
-**Install the CRDs into the cluster:**
-
-```sh
-make install
+```bash
+make generate manifests   # regenerate DeepCopy + CRDs
+make fmt vet              # format and vet
+go test ./...             # run unit tests (no envtest required)
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+## Status
 
-```sh
-make deploy IMG=<some-registry>/alibaba-cloud-csi-operator:tag
 ```
-
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
-
-```sh
-kubectl apply -k config/samples/
+$ kubectl get alicsid -n kube-system
+NAME      DISKREADY   AVAILABLE   AGE
+cluster   true        True        5m
 ```
-
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/alibaba-cloud-csi-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/alibaba-cloud-csi-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-operator-sdk edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
 
 ## License
 
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Apache License 2.0

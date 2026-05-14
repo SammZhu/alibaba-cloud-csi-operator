@@ -1,0 +1,364 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "csi.alibabacloud.com/v1alpha1",
+          "kind": "AlibabaCloudCSIDriver",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "alibaba-cloud-csi-operator"
+            },
+            "name": "cluster",
+            "namespace": "kube-system"
+          },
+          "spec": {
+            "auth": {
+              "ramToken": "v2"
+            },
+            "controller": {
+              "nodeSelector": {
+                "node-role.kubernetes.io/master": ""
+              },
+              "replicas": 2,
+              "tolerations": [
+                {
+                  "effect": "NoSchedule",
+                  "key": "node-role.kubernetes.io/master"
+                }
+              ]
+            },
+            "disk": {
+              "defaultStorageClass": true,
+              "enabled": true,
+              "storageClasses": [
+                {
+                  "allowVolumeExpansion": true,
+                  "name": "alicloud-disk-efficiency",
+                  "reclaimPolicy": "Delete",
+                  "type": "cloud_efficiency"
+                },
+                {
+                  "allowVolumeExpansion": true,
+                  "name": "alicloud-disk-essd",
+                  "reclaimPolicy": "Delete",
+                  "type": "cloud_essd"
+                }
+              ]
+            },
+            "imageTag": "v1.35.3",
+            "nas": {
+              "enabled": false
+            },
+            "oss": {
+              "enabled": false
+            }
+          }
+        }
+      ]
+    capabilities: Basic Install
+    categories: Storage
+    containerImage: quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3
+    createdAt: "2026-05-14T07:53:45Z"
+    description: Installs and manages Alibaba Cloud CSI drivers (Disk/NAS/OSS) on
+      OpenShift External Platform clusters using RAM Role instance principal authentication.
+    operatorframework.io/suggested-namespace: kube-system
+    operators.operatorframework.io/builder: operator-sdk-v1.42.2
+    operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
+    support: SammZhu
+  name: alibaba-cloud-csi-operator.v1.35.3
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: AlibabaCloudCSIDriver manages the lifecycle of Alibaba Cloud CSI
+        driver components (Disk, NAS, OSS) on an OpenShift cluster.
+      displayName: Alibaba Cloud CSI Driver
+      kind: AlibabaCloudCSIDriver
+      name: alibabacloudcsidrivers.csi.alibabacloud.com
+      version: v1alpha1
+  description: |
+    ## Overview
+
+    The Alibaba Cloud CSI Operator installs and manages the
+    [alibaba-cloud-csi-driver](https://github.com/kubernetes-sigs/alibaba-cloud-csi-driver)
+    on OpenShift clusters running in **External Platform** mode.
+
+    When OpenShift runs in External Platform mode, no cloud-provider CSI driver is
+    installed automatically. This operator fills that gap by deploying and reconciling
+    all CSI components declaratively through a single `AlibabaCloudCSIDriver` CR.
+
+    ## Features
+
+    - **Disk (EBS / cloud disk)** — block storage, ReadWriteOnce (Phase 1)
+    - **NAS file storage** — shared file storage, ReadWriteMany (Phase 2)
+    - **OSS object storage** — object-mount storage (Phase 3)
+    - **RAM Role authentication** — uses ECS instance metadata (IMDSv2), no AK/SK required
+    - **OpenShift SCC** — automatically creates privileged SCC binding for the CSI node DaemonSet
+    - **StorageClass management** — creates and annotates default StorageClasses
+
+    ## Prerequisites
+
+    - OpenShift 4.x in External Platform mode
+    - ECS nodes with RAM Role bound (disk-related IAM policies attached)
+    - OLM installed (included in all OpenShift clusters)
+
+    ## Usage
+
+    After installing the operator, create the singleton `AlibabaCloudCSIDriver` CR:
+
+    ```yaml
+    apiVersion: csi.alibabacloud.com/v1alpha1
+    kind: AlibabaCloudCSIDriver
+    metadata:
+      name: cluster
+      namespace: kube-system
+    spec:
+      disk:
+        enabled: true
+        defaultStorageClass: true
+        storageClasses:
+          - name: alicloud-disk-efficiency
+            type: cloud_efficiency
+      imageTag: v1.35.3
+      auth:
+        ramToken: v2
+      controller:
+        replicas: 2
+        nodeSelector:
+          node-role.kubernetes.io/master: ""
+    ```
+  displayName: Alibaba Cloud CSI Operator
+  icon:
+  - base64data: ""
+    mediatype: image/png
+  install:
+    spec:
+      clusterPermissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - events
+          verbs:
+          - create
+          - patch
+        - apiGroups:
+          - ""
+          resources:
+          - serviceaccounts
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - apps
+          resources:
+          - daemonsets
+          - deployments
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - csi.alibabacloud.com
+          resources:
+          - alibabacloudcsidrivers
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - csi.alibabacloud.com
+          resources:
+          - alibabacloudcsidrivers/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - csi.alibabacloud.com
+          resources:
+          - alibabacloudcsidrivers/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - clusterrolebindings
+          - clusterroles
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - storage.k8s.io
+          resources:
+          - csidrivers
+          - storageclasses
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - authentication.k8s.io
+          resources:
+          - tokenreviews
+          verbs:
+          - create
+        - apiGroups:
+          - authorization.k8s.io
+          resources:
+          - subjectaccessreviews
+          verbs:
+          - create
+        serviceAccountName: alibaba-cloud-csi-operator-controller-manager
+      deployments:
+      - label:
+          app.kubernetes.io/managed-by: kustomize
+          app.kubernetes.io/name: alibaba-cloud-csi-operator
+          control-plane: controller-manager
+        name: alibaba-cloud-csi-operator-controller-manager
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: alibaba-cloud-csi-operator
+              control-plane: controller-manager
+          strategy: {}
+          template:
+            metadata:
+              annotations:
+                kubectl.kubernetes.io/default-container: manager
+              labels:
+                app.kubernetes.io/name: alibaba-cloud-csi-operator
+                control-plane: controller-manager
+            spec:
+              containers:
+              - args:
+                - --metrics-bind-address=:8443
+                - --leader-elect
+                - --health-probe-bind-address=:8081
+                command:
+                - /manager
+                image: quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8081
+                  initialDelaySeconds: 15
+                  periodSeconds: 20
+                name: manager
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 8081
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                resources:
+                  limits:
+                    cpu: 500m
+                    memory: 128Mi
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+              securityContext:
+                runAsNonRoot: true
+                seccompProfile:
+                  type: RuntimeDefault
+              serviceAccountName: alibaba-cloud-csi-operator-controller-manager
+              terminationGracePeriodSeconds: 10
+      permissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - coordination.k8s.io
+          resources:
+          - leases
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - ""
+          resources:
+          - events
+          verbs:
+          - create
+          - patch
+        serviceAccountName: alibaba-cloud-csi-operator-controller-manager
+    strategy: deployment
+  installModes:
+  - supported: true
+    type: OwnNamespace
+  - supported: true
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - storage
+  - csi
+  - alibaba-cloud
+  - openshift
+  - disk
+  - nas
+  - oss
+  links:
+  - name: Upstream CSI Driver
+    url: https://github.com/kubernetes-sigs/alibaba-cloud-csi-driver
+  - name: Source Code
+    url: https://github.com/SammZhu/alibaba-cloud-csi-operator
+  maintainers:
+  - email: zhuhe@msn.com
+    name: Sam Zhu
+  maturity: alpha
+  provider:
+    name: SammZhu
+    url: https://github.com/SammZhu
+  version: 1.35.3

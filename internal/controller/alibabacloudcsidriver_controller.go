@@ -18,16 +18,20 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,10 +50,14 @@ const (
 	csiProvisionerImage = "registry.cn-hangzhou.aliyuncs.com/acs/csi-provisioner:v3.5.0"
 	csiAttacherImage    = "registry.cn-hangzhou.aliyuncs.com/acs/csi-attacher:v4.3.0"
 	csiResizerImage     = "registry.cn-hangzhou.aliyuncs.com/acs/csi-resizer:v1.8.0"
+	csiSnapshotterImage = "registry.cn-hangzhou.aliyuncs.com/acs/csi-snapshotter:v6.3.0"
 	nodeRegistrarImage  = "registry.cn-hangzhou.aliyuncs.com/acs/csi-node-driver-registrar:v2.8.0"
 	livenessProbeImage  = "registry.cn-hangzhou.aliyuncs.com/acs/livenessprobe:v2.10.0"
 
 	fieldManager = "alibaba-cloud-csi-operator"
+
+	defaultDiskSnapClassName = "alibaba-cloud-disk-snapclass"
+	defaultNASSnapClassName  = "alibaba-cloud-nas-snapclass"
 )
 
 // AlibabaCloudCSIDriverReconciler reconciles a AlibabaCloudCSIDriver object
@@ -67,13 +75,16 @@ type AlibabaCloudCSIDriverReconciler struct {
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotclasses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=storageprofiles,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=use,resourceNames={privileged}
 
 func (r *AlibabaCloudCSIDriverReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	var cr csiv1alpha1.AlibabaCloudCSIDriver
 	if err := r.Get(ctx, req.NamespacedName, &cr); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -81,7 +92,6 @@ func (r *AlibabaCloudCSIDriverReconciler) Reconcile(ctx context.Context, req ctr
 
 	log.Info("Reconciling AlibabaCloudCSIDriver", "name", cr.Name)
 
-	// Track whether any reconcile step fails so we update Status.Conditions correctly.
 	var reconcileErr error
 
 	// 1. Ensure shared RBAC (ServiceAccount, ClusterRole, ClusterRoleBindings).
@@ -99,27 +109,30 @@ func (r *AlibabaCloudCSIDriverReconciler) Reconcile(ctx context.Context, req ctr
 		}
 	}
 
-	// 3. NAS driver (Phase 2 — skip if not enabled).
+	// 3. NAS driver components (Phase 2).
 	nasReady := false
 	if reconcileErr == nil && cr.Spec.NAS.Enabled {
-		// Phase 2: NAS reconcile not yet implemented.
-		log.Info("NAS CSI driver requested but not yet implemented — skipping")
+		if err := r.ensureNASDriver(ctx, &cr); err != nil {
+			reconcileErr = fmt.Errorf("nas driver: %w", err)
+		} else {
+			nasReady = true
+		}
 	}
 
-	// 4. OSS driver (Phase 3 — skip if not enabled).
+	// 4. OSS driver (Phase 3 — not yet implemented).
 	ossReady := false
 	if reconcileErr == nil && cr.Spec.OSS.Enabled {
-		// Phase 3: OSS reconcile not yet implemented.
 		log.Info("OSS CSI driver requested but not yet implemented — skipping")
 	}
 
 	// 5. Update status.
+	allReady := (!cr.Spec.Disk.Enabled || diskReady) && (!cr.Spec.NAS.Enabled || nasReady)
 	patch := client.MergeFrom(cr.DeepCopy())
 	cr.Status.ObservedGeneration = cr.Generation
 	cr.Status.DiskDriverReady = diskReady
 	cr.Status.NASDriverReady = nasReady
 	cr.Status.OSSDriverReady = ossReady
-	cr.Status.Conditions = buildConditions(diskReady, reconcileErr)
+	cr.Status.Conditions = buildConditions(allReady, reconcileErr)
 	if err := r.Status().Patch(ctx, &cr, patch); err != nil {
 		log.Error(err, "failed to update status")
 	}
@@ -150,7 +163,6 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureRBAC(ctx context.Context, cr *cs
 	if err := r.ensureClusterRoleBinding(ctx); err != nil {
 		return err
 	}
-	// SCC privileged binding (OpenShift-specific).
 	return r.ensureSCCBinding(ctx)
 }
 
@@ -187,8 +199,8 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureClusterRoleBinding(ctx context.C
 	return createOrIgnore(ctx, r.Client, crb)
 }
 
-// ensureSCCBinding creates the ClusterRoleBinding that grants the CSI ServiceAccount
-// the OpenShift privileged SCC. This is required for the Node DaemonSet to mount /dev.
+// ensureSCCBinding grants the CSI ServiceAccount the privileged SCC required
+// for the Node DaemonSet to mount /dev and perform disk operations on RHCOS.
 func (r *AlibabaCloudCSIDriverReconciler) ensureSCCBinding(ctx context.Context) error {
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "alibabacloud-csi-privileged"},
@@ -211,43 +223,59 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskDriver(ctx context.Context, 
 	}
 	pluginImage := fmt.Sprintf("%s:%s", csiImage, imageTag)
 
-	// CSIDriver object.
-	if err := r.ensureCSIDriver(ctx, diskDriverName); err != nil {
+	if err := r.ensureDiskCSIDriver(ctx); err != nil {
 		return fmt.Errorf("CSIDriver: %w", err)
 	}
-
-	// Controller Deployment.
 	if err := r.ensureDiskControllerDeployment(ctx, cr, pluginImage); err != nil {
 		return fmt.Errorf("controller Deployment: %w", err)
 	}
-
-	// Node DaemonSet.
 	if err := r.ensureDiskNodeDaemonSet(ctx, cr, pluginImage); err != nil {
 		return fmt.Errorf("node DaemonSet: %w", err)
 	}
 
-	// StorageClasses.
+	// VolumeSnapshotClass — must be created before StorageProfile so we can
+	// link spec.snapshotClass when patching.
+	if err := r.ensureVolumeSnapshotClass(ctx, diskDriverName, cr.Spec.Disk.Snapshot); err != nil {
+		return fmt.Errorf("VolumeSnapshotClass: %w", err)
+	}
+
+	// Resolve the VolumeSnapshotClass name that StorageProfile should reference.
+	snapClassName := cr.Spec.Disk.Snapshot.ClassName
+	if cr.Spec.Disk.Snapshot.Enabled && snapClassName == "" {
+		snapClassName = defaultDiskSnapClassName
+	}
+
 	for i, sc := range cr.Spec.Disk.StorageClasses {
 		isDefault := cr.Spec.Disk.DefaultStorageClass && i == 0
-		if err := r.ensureStorageClass(ctx, sc, isDefault); err != nil {
+		if err := r.ensureDiskStorageClass(ctx, sc, isDefault); err != nil {
 			return fmt.Errorf("StorageClass %s: %w", sc.Name, err)
+		}
+		// Patch CDI StorageProfile for OKV compatibility (disk = Block mode).
+		if err := r.ensureStorageProfile(ctx, sc.Name, cr.Spec.Disk.StorageProfile, true, snapClassName); err != nil {
+			return fmt.Errorf("StorageProfile %s: %w", sc.Name, err)
 		}
 	}
 
 	return nil
 }
 
-func (r *AlibabaCloudCSIDriverReconciler) ensureCSIDriver(ctx context.Context, driverName string) error {
+// ensureDiskCSIDriver creates the CSIDriver object for the disk plugin.
+// seLinuxMount: true is required on RHCOS (SELinux enforcing) so that the kubelet
+// applies the correct SELinux label to the mount point before handing it to the driver.
+// This matches the behaviour of the AWS EBS CSI driver on ROSA.
+func (r *AlibabaCloudCSIDriverReconciler) ensureDiskCSIDriver(ctx context.Context) error {
 	attachRequired := true
 	podInfoOnMount := true
+	seLinuxMount := true
 	fsGroupPolicy := storagev1.FileFSGroupPolicy
 
 	obj := &storagev1.CSIDriver{
-		ObjectMeta: metav1.ObjectMeta{Name: driverName},
+		ObjectMeta: metav1.ObjectMeta{Name: diskDriverName},
 		Spec: storagev1.CSIDriverSpec{
 			AttachRequired: &attachRequired,
 			PodInfoOnMount: &podInfoOnMount,
 			FSGroupPolicy:  &fsGroupPolicy,
+			SELinuxMount:   &seLinuxMount,
 		},
 	}
 	return createOrIgnore(ctx, r.Client, obj)
@@ -278,6 +306,53 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskControllerDeployment(ctx con
 
 	labels := map[string]string{"app": "csi-disk-controller"}
 
+	containers := []corev1.Container{
+		{
+			Name:  "csi-plugin",
+			Image: pluginImage,
+			Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=diskplugin.csi.alibabacloud.com"},
+			Env: []corev1.EnvVar{
+				{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"},
+				{Name: "MAX_VOLUMES_PERNODE", Value: "15"},
+				{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("100m"),
+					corev1.ResourceMemory: resource.MustParse("128Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
+				},
+			},
+		},
+		{
+			Name:  "csi-provisioner",
+			Image: csiProvisionerImage,
+			Args:  []string{"--csi-address=$(ADDRESS)", "--v=5", "--feature-gates=Topology=True", "--extra-create-metadata=true"},
+			Env:   []corev1.EnvVar{{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"}},
+		},
+		{
+			Name:  "csi-attacher",
+			Image: csiAttacherImage,
+			Args:  []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
+			Env:   []corev1.EnvVar{{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"}},
+		},
+		{
+			Name:  "csi-resizer",
+			Image: csiResizerImage,
+			Args:  []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
+			Env:   []corev1.EnvVar{{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"}},
+		},
+		{
+			Name:  "csi-snapshotter",
+			Image: csiSnapshotterImage,
+			Args:  []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
+			Env:   []corev1.EnvVar{{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"}},
+		},
+	}
+
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "csi-disk-controller",
@@ -292,52 +367,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskControllerDeployment(ctx con
 					ServiceAccountName: serviceAccountName,
 					NodeSelector:       nodeSelector,
 					Tolerations:        tolerations,
-					Containers: []corev1.Container{
-						{
-							Name:  "csi-plugin",
-							Image: pluginImage,
-							Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=diskplugin.csi.alibabacloud.com"},
-							Env: []corev1.EnvVar{
-								{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"},
-								{Name: "MAX_VOLUMES_PERNODE", Value: "15"},
-								{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
-							},
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("128Mi"),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("500m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
-								},
-							},
-						},
-						{
-							Name:  "csi-provisioner",
-							Image: csiProvisionerImage,
-							Args:  []string{"--csi-address=$(ADDRESS)", "--v=5", "--feature-gates=Topology=True", "--extra-create-metadata=true"},
-							Env: []corev1.EnvVar{
-								{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"},
-							},
-						},
-						{
-							Name:  "csi-attacher",
-							Image: csiAttacherImage,
-							Args:  []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
-							Env: []corev1.EnvVar{
-								{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"},
-							},
-						},
-						{
-							Name:  "csi-resizer",
-							Image: csiResizerImage,
-							Args:  []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
-							Env: []corev1.EnvVar{
-								{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"},
-							},
-						},
-					},
+					Containers:         containers,
 					Volumes: []corev1.Volume{
 						{Name: "socket-dir", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					},
@@ -432,7 +462,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskNodeDaemonSet(ctx context.Co
 	return createOrUpdate(ctx, r.Client, ds)
 }
 
-func (r *AlibabaCloudCSIDriverReconciler) ensureStorageClass(ctx context.Context, sc csiv1alpha1.DiskStorageClassSpec, isDefault bool) error {
+func (r *AlibabaCloudCSIDriverReconciler) ensureDiskStorageClass(ctx context.Context, sc csiv1alpha1.DiskStorageClassSpec, isDefault bool) error {
 	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
 	if sc.ReclaimPolicy == "Retain" {
 		reclaimPolicy = corev1.PersistentVolumeReclaimRetain
@@ -443,6 +473,16 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureStorageClass(ctx context.Context
 	if isDefault {
 		annotations["storageclass.kubernetes.io/is-default-class"] = "true"
 	}
+	if sc.VirtDefault {
+		annotations["storageclass.kubevirt.io/is-default-virt-class"] = "true"
+	}
+
+	params := map[string]string{
+		"type": sc.Type,
+	}
+	if sc.Encrypted {
+		params["encrypted"] = "true"
+	}
 
 	obj := &storagev1.StorageClass{
 		ObjectMeta: metav1.ObjectMeta{
@@ -452,17 +492,413 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureStorageClass(ctx context.Context
 		Provisioner:          diskDriverName,
 		ReclaimPolicy:        &reclaimPolicy,
 		AllowVolumeExpansion: &allowExpansion,
-		Parameters: map[string]string{
-			"type": sc.Type,
-		},
-		VolumeBindingMode: storageClassBindingMode(storagev1.VolumeBindingWaitForFirstConsumer),
+		Parameters:           params,
+		VolumeBindingMode:    storageClassBindingMode(storagev1.VolumeBindingWaitForFirstConsumer),
 	}
 	return createOrIgnore(ctx, r.Client, obj)
 }
 
+// ── NAS Driver ───────────────────────────────────────────────────────────────────
+
+func (r *AlibabaCloudCSIDriverReconciler) ensureNASDriver(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver) error {
+	imageTag := cr.Spec.ImageTag
+	if imageTag == "" {
+		imageTag = "v1.35.3"
+	}
+	pluginImage := fmt.Sprintf("%s:%s", csiImage, imageTag)
+
+	if err := r.ensureNASCSIDriver(ctx); err != nil {
+		return fmt.Errorf("CSIDriver: %w", err)
+	}
+	if err := r.ensureNASControllerDeployment(ctx, cr, pluginImage); err != nil {
+		return fmt.Errorf("controller Deployment: %w", err)
+	}
+	if err := r.ensureNASNodeDaemonSet(ctx, cr, pluginImage); err != nil {
+		return fmt.Errorf("node DaemonSet: %w", err)
+	}
+
+	for i, sc := range cr.Spec.NAS.StorageClasses {
+		isDefault := i == 0 // first NAS class is default NAS class (not cluster default)
+		if err := r.ensureNASStorageClass(ctx, sc, isDefault); err != nil {
+			return fmt.Errorf("StorageClass %s: %w", sc.Name, err)
+		}
+		// Patch CDI StorageProfile for OKV compatibility (NAS = RWX Filesystem mode).
+		// NAS snapshots are not yet implemented — pass empty snapshotClass.
+		if err := r.ensureStorageProfile(ctx, sc.Name, cr.Spec.NAS.StorageProfile, false, ""); err != nil {
+			return fmt.Errorf("StorageProfile %s: %w", sc.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// ensureNASCSIDriver creates the CSIDriver object for the NAS plugin.
+// Key differences from disk:
+//   - attachRequired: false  — NAS volumes don't need VolumeAttachment objects
+//   - seLinuxMount: false    — NFS mounts don't support SELinux label relabelling
+func (r *AlibabaCloudCSIDriverReconciler) ensureNASCSIDriver(ctx context.Context) error {
+	attachRequired := false
+	podInfoOnMount := true
+	seLinuxMount := false
+	fsGroupPolicy := storagev1.FileFSGroupPolicy
+
+	obj := &storagev1.CSIDriver{
+		ObjectMeta: metav1.ObjectMeta{Name: nasDriverName},
+		Spec: storagev1.CSIDriverSpec{
+			AttachRequired: &attachRequired,
+			PodInfoOnMount: &podInfoOnMount,
+			FSGroupPolicy:  &fsGroupPolicy,
+			SELinuxMount:   &seLinuxMount,
+		},
+	}
+	return createOrIgnore(ctx, r.Client, obj)
+}
+
+func (r *AlibabaCloudCSIDriverReconciler) ensureNASControllerDeployment(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, pluginImage string) error {
+	replicas := cr.Spec.Controller.Replicas
+	if replicas == 0 {
+		replicas = 2
+	}
+
+	nodeSelector := cr.Spec.Controller.NodeSelector
+	if nodeSelector == nil {
+		nodeSelector = map[string]string{"node-role.kubernetes.io/master": ""}
+	}
+
+	tolerations := toCoreTolerations(cr.Spec.Controller.Tolerations)
+	if len(tolerations) == 0 {
+		tolerations = []corev1.Toleration{
+			{Key: "node-role.kubernetes.io/master", Effect: corev1.TaintEffectNoSchedule},
+		}
+	}
+
+	ramTokenVersion := cr.Spec.Auth.RAMToken
+	if ramTokenVersion == "" {
+		ramTokenVersion = "v2"
+	}
+
+	labels := map[string]string{"app": "csi-nas-controller"}
+
+	// NAS controller only needs provisioner — no attacher (attachRequired=false),
+	// no resizer (NAS capacity is flexible and serverless).
+	containers := []corev1.Container{
+		{
+			Name:  "csi-plugin",
+			Image: pluginImage,
+			Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=nasplugin.csi.alibabacloud.com"},
+			Env: []corev1.EnvVar{
+				{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock"},
+				{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("100m"),
+					corev1.ResourceMemory: resource.MustParse("128Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
+				},
+			},
+		},
+		{
+			Name:  "csi-provisioner",
+			Image: csiProvisionerImage,
+			Args:  []string{"--csi-address=$(ADDRESS)", "--v=5", "--extra-create-metadata=true"},
+			Env:   []corev1.EnvVar{{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock"}},
+		},
+	}
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "csi-nas-controller",
+			Namespace: operatorNamespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: serviceAccountName,
+					NodeSelector:       nodeSelector,
+					Tolerations:        tolerations,
+					Containers:         containers,
+					Volumes: []corev1.Volume{
+						{Name: "socket-dir", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+					},
+				},
+			},
+		},
+	}
+
+	return createOrUpdate(ctx, r.Client, deploy)
+}
+
+func (r *AlibabaCloudCSIDriverReconciler) ensureNASNodeDaemonSet(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, pluginImage string) error {
+	ramTokenVersion := cr.Spec.Auth.RAMToken
+	if ramTokenVersion == "" {
+		ramTokenVersion = "v2"
+	}
+
+	hostPathDir := corev1.HostPathDirectory
+	hostPathDirOrCreate := corev1.HostPathDirectoryOrCreate
+	privileged := true
+	labels := map[string]string{"app": "csi-nas-node"}
+
+	ds := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "csi-nas-node",
+			Namespace: operatorNamespace,
+		},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: serviceAccountName,
+					HostNetwork:        true,
+					Tolerations:        []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+					Containers: []corev1.Container{
+						{
+							Name:  "csi-plugin",
+							Image: pluginImage,
+							Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=nasplugin.csi.alibabacloud.com"},
+							SecurityContext: &corev1.SecurityContext{
+								Privileged: &privileged,
+							},
+							Env: []corev1.EnvVar{
+								{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock"},
+								{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
+								{Name: "KUBE_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "kubelet-dir", MountPath: "/var/lib/kubelet", MountPropagation: mountPropagation(corev1.MountPropagationBidirectional)},
+								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com"},
+								{Name: "registration-dir", MountPath: "/registration"},
+							},
+						},
+						{
+							Name:  "node-driver-registrar",
+							Image: nodeRegistrarImage,
+							Args: []string{
+								"--v=5",
+								"--csi-address=/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock",
+								"--kubelet-registration-path=/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock",
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com"},
+								{Name: "registration-dir", MountPath: "/registration"},
+							},
+						},
+						{
+							Name:  "liveness-probe",
+							Image: livenessProbeImage,
+							Args:  []string{"--csi-address=/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock"},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com"},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{Name: "kubelet-dir", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/kubelet", Type: &hostPathDir}}},
+						{Name: "plugin-dir", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com", Type: &hostPathDirOrCreate}}},
+						{Name: "registration-dir", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/kubelet/plugins_registry", Type: &hostPathDir}}},
+					},
+				},
+			},
+		},
+	}
+
+	return createOrUpdate(ctx, r.Client, ds)
+}
+
+func (r *AlibabaCloudCSIDriverReconciler) ensureNASStorageClass(ctx context.Context, sc csiv1alpha1.NASStorageClassSpec, _ bool) error {
+	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
+	if sc.ReclaimPolicy == "Retain" {
+		reclaimPolicy = corev1.PersistentVolumeReclaimRetain
+	}
+	allowExpansion := sc.AllowVolumeExpansion
+
+	mountProtocol := sc.MountProtocol
+	if mountProtocol == "" {
+		mountProtocol = "nfs"
+	}
+
+	annotations := map[string]string{}
+	if sc.VirtDefault {
+		annotations["storageclass.kubevirt.io/is-default-virt-class"] = "true"
+	}
+
+	params := map[string]string{
+		"mountType": mountProtocol,
+	}
+	if sc.StorageType != "" {
+		params["storageType"] = sc.StorageType
+	}
+
+	obj := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        sc.Name,
+			Annotations: annotations,
+		},
+		Provisioner:          nasDriverName,
+		ReclaimPolicy:        &reclaimPolicy,
+		AllowVolumeExpansion: &allowExpansion,
+		Parameters:           params,
+		// Immediate binding is required for RWX NAS volumes — WaitForFirstConsumer
+		// does not work well with multi-node access patterns.
+		VolumeBindingMode: storageClassBindingMode(storagev1.VolumeBindingImmediate),
+	}
+	return createOrIgnore(ctx, r.Client, obj)
+}
+
+// ── VolumeSnapshotClass ──────────────────────────────────────────────────────────
+
+// ensureVolumeSnapshotClass creates a VolumeSnapshotClass for the given driver.
+// The function gracefully skips creation if the snapshot.storage.k8s.io CRDs are
+// not installed on the cluster (returns nil instead of an error).
+func (r *AlibabaCloudCSIDriverReconciler) ensureVolumeSnapshotClass(ctx context.Context, driverName string, cfg csiv1alpha1.SnapshotConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+
+	className := cfg.ClassName
+	if className == "" {
+		if driverName == diskDriverName {
+			className = defaultDiskSnapClassName
+		} else {
+			className = defaultNASSnapClassName
+		}
+	}
+
+	u := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "snapshot.storage.k8s.io/v1",
+			"kind":       "VolumeSnapshotClass",
+			"metadata": map[string]interface{}{
+				"name": className,
+				"annotations": map[string]interface{}{
+					"snapshot.storage.kubernetes.io/is-default-class": "true",
+				},
+			},
+			"driver":         driverName,
+			"deletionPolicy": "Delete",
+		},
+	}
+
+	if err := r.Client.Create(ctx, u); err != nil {
+		if apimeta.IsNoMatchError(err) {
+			// snapshot.storage.k8s.io CRDs are not installed — skip silently.
+			logf.FromContext(ctx).Info("VolumeSnapshot CRDs not found, skipping VolumeSnapshotClass", "class", className)
+			return nil
+		}
+		if apierrors.IsAlreadyExists(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// ── CDI StorageProfile ───────────────────────────────────────────────────────────
+
+// ensureStorageProfile patches the CDI StorageProfile for the given StorageClass
+// to set correct claimPropertySets, cloneStrategy, and snapshotClass for
+// OpenShift Virtualization.
+//
+// isBlock=true  → disk: RWO + Block (better VM performance, avoids filesystem overhead)
+// isBlock=false → NAS:  RWX + Filesystem (live migration requires ReadWriteMany)
+//
+// snapClassName is the VolumeSnapshotClass name to link via spec.snapshotClass.
+// CDI uses this to select the right VolumeSnapshotClass for snapshot-based clones
+// instead of guessing by provisioner. Pass "" to leave the field unset.
+//
+// The function silently returns nil if:
+//   - cfg.Patch is false
+//   - CDI is not installed (NoMatchError)
+//   - The StorageProfile does not exist yet (CDI creates it lazily)
+func (r *AlibabaCloudCSIDriverReconciler) ensureStorageProfile(ctx context.Context, name string, cfg csiv1alpha1.StorageProfileConfig, isBlock bool, snapClassName string) error {
+	if !cfg.Patch {
+		return nil
+	}
+
+	sp := &unstructured.Unstructured{}
+	sp.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cdi.kubevirt.io",
+		Version: "v1beta1",
+		Kind:    "StorageProfile",
+	})
+
+	if err := r.Client.Get(ctx, types.NamespacedName{Name: name}, sp); err != nil {
+		if apimeta.IsNoMatchError(err) {
+			// CDI is not installed — skip.
+			return nil
+		}
+		if apierrors.IsNotFound(err) {
+			// StorageProfile not created by CDI yet — will be retried next reconcile.
+			return nil
+		}
+		return err
+	}
+
+	// CDI CloneStrategy values (from cdi.kubevirt.io/v1beta1 CDICloneStrategy type):
+	//   "csi-clone"  — CloneStrategyCsiClone
+	//   "snapshot"   — CloneStrategySnapshot
+	//   "copy"       — CloneStrategyHostAssisted (NOT "host-assisted")
+	cloneStrategy := cfg.CloneStrategy
+	if cloneStrategy == "" {
+		cloneStrategy = "csi-clone"
+	}
+
+	var claimPropertySets []interface{}
+	if isBlock {
+		// Disk: Block volumeMode gives VMs direct block device access with better
+		// I/O performance and avoids double filesystem overhead.
+		// Matches CDI built-in table: ebs.csi.aws.com → {{rwo, block}}.
+		claimPropertySets = []interface{}{
+			map[string]interface{}{
+				"accessModes": []interface{}{"ReadWriteOnce"},
+				"volumeMode":  "Block",
+			},
+		}
+	} else {
+		// NAS: ReadWriteMany Filesystem for live migration support.
+		// Matches CDI built-in table: efs.csi.aws.com → {{rwx, file}, {rwo, file}}.
+		claimPropertySets = []interface{}{
+			map[string]interface{}{
+				"accessModes": []interface{}{"ReadWriteMany"},
+				"volumeMode":  "Filesystem",
+			},
+			map[string]interface{}{
+				"accessModes": []interface{}{"ReadWriteOnce"},
+				"volumeMode":  "Filesystem",
+			},
+		}
+	}
+
+	specPatch := map[string]interface{}{
+		"claimPropertySets": claimPropertySets,
+		"cloneStrategy":     cloneStrategy,
+	}
+	// spec.snapshotClass links the VolumeSnapshotClass for snapshot-based cloning.
+	// CDI doc: "If not set, a VolumeSnapshotClass is chosen according to the provisioner."
+	// Explicitly setting it avoids ambiguity when multiple VolumeSnapshotClasses exist.
+	if snapClassName != "" {
+		specPatch["snapshotClass"] = snapClassName
+	}
+
+	patchData, err := json.Marshal(map[string]interface{}{"spec": specPatch})
+	if err != nil {
+		return fmt.Errorf("marshal StorageProfile patch: %w", err)
+	}
+
+	return r.Client.Patch(ctx, sp, client.RawPatch(types.MergePatchType, patchData))
+}
+
 // ── Status helpers ───────────────────────────────────────────────────────────────
 
-func buildConditions(diskReady bool, err error) []csiv1alpha1.CSIDriverCondition {
+func buildConditions(allReady bool, err error) []csiv1alpha1.CSIDriverCondition {
 	now := metav1.Now()
 	if err != nil {
 		return []csiv1alpha1.CSIDriverCondition{
@@ -472,7 +908,7 @@ func buildConditions(diskReady bool, err error) []csiv1alpha1.CSIDriverCondition
 		}
 	}
 	avail := "False"
-	if diskReady {
+	if allReady {
 		avail = "True"
 	}
 	return []csiv1alpha1.CSIDriverCondition{
@@ -486,18 +922,18 @@ func buildConditions(diskReady bool, err error) []csiv1alpha1.CSIDriverCondition
 
 // createOrIgnore creates the object if it does not exist; ignores AlreadyExists.
 func createOrIgnore(ctx context.Context, c client.Client, obj client.Object) error {
-	if err := c.Create(ctx, obj); err != nil && !errors.IsAlreadyExists(err) {
+	if err := c.Create(ctx, obj); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 	return nil
 }
 
-// createOrUpdate creates the object if it does not exist, or patches it if it does.
+// createOrUpdate creates the object if it does not exist, or replaces it if it does.
 func createOrUpdate(ctx context.Context, c client.Client, obj client.Object) error {
 	existing := obj.DeepCopyObject().(client.Object)
 	err := c.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, existing)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return c.Create(ctx, obj)
 		}
 		return err
@@ -522,4 +958,3 @@ func toCoreTolerations(in []csiv1alpha1.TolerationSpec) []corev1.Toleration {
 func mountPropagation(m corev1.MountPropagationMode) *corev1.MountPropagationMode { return &m }
 
 func storageClassBindingMode(m storagev1.VolumeBindingMode) *storagev1.VolumeBindingMode { return &m }
-

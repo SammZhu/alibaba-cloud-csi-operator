@@ -72,8 +72,26 @@ spec:
         enabled: true
         defaultStorageClass: true
         storageClasses:
+          - name: alicloud-disk-essd
+            type: cloud_essd
+            virtDefault: true   # default StorageClass for OpenShift Virtualization
           - name: alicloud-disk-efficiency
             type: cloud_efficiency
+        snapshot:
+          enabled: true         # requires snapshot.storage.k8s.io CRDs
+        storageProfile:
+          patch: true           # patch CDI StorageProfile for OKV DataVolume support
+          cloneStrategy: csi-clone
+      nas:
+        enabled: true           # required for VM live migration (ReadWriteMany)
+        storageClasses:
+          - name: alicloud-nas-standard
+            storageType: standard
+            mountProtocol: nfs
+            virtDefault: true
+        storageProfile:
+          patch: true
+          cloneStrategy: csi-clone
       imageTag: v1.35.3
       auth:
         ramToken: v2
@@ -215,6 +233,8 @@ spec:
     name: csi-attacher
   - image: registry.cn-hangzhou.aliyuncs.com/acs/csi-resizer:v1.8.0
     name: csi-resizer
+  - image: registry.cn-hangzhou.aliyuncs.com/acs/csi-snapshotter:v6.3.0
+    name: csi-snapshotter
   - image: registry.cn-hangzhou.aliyuncs.com/acs/csi-node-driver-registrar:v2.8.0
     name: csi-node-driver-registrar
   - image: registry.cn-hangzhou.aliyuncs.com/acs/livenessprobe:v2.10.0

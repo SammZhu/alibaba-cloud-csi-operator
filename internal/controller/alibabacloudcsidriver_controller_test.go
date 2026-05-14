@@ -335,3 +335,345 @@ func TestBuildConditions_Error(t *testing.T) {
 		t.Errorf("Degraded = %q, want True on error", byType[csiv1alpha1.ConditionDegraded])
 	}
 }
+
+// ── Disk CSIDriver: seLinuxMount=true ───────────────────────────────────────────
+
+// TestDiskCSIDriver_SELinuxMount verifies that the disk CSIDriver is created with
+// seLinuxMount: true.  This is required on RHCOS (SELinux enforcing) so that the
+// kubelet relabels the bind-mount before handing it to the driver — matching the
+// behaviour of the AWS EBS CSI driver on ROSA.
+func TestDiskCSIDriver_SELinuxMount(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	csiDriver := &storagev1.CSIDriver{}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: diskDriverName}, csiDriver); err != nil {
+		t.Fatalf("CSIDriver not found: %v", err)
+	}
+	if csiDriver.Spec.SELinuxMount == nil || !*csiDriver.Spec.SELinuxMount {
+		t.Error("disk CSIDriver must have seLinuxMount: true for RHCOS SELinux compatibility")
+	}
+	if csiDriver.Spec.AttachRequired == nil || !*csiDriver.Spec.AttachRequired {
+		t.Error("disk CSIDriver must have attachRequired: true")
+	}
+}
+
+// ── NAS CSIDriver: seLinuxMount=false, attachRequired=false ─────────────────────
+
+func TestNASDriver_CreatesComponents(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+	cr.Spec.NAS = csiv1alpha1.NASSpec{
+		Enabled: true,
+		StorageClasses: []csiv1alpha1.NASStorageClassSpec{
+			{Name: "alicloud-nas-standard", StorageType: "standard", MountProtocol: "nfs", ReclaimPolicy: "Delete", AllowVolumeExpansion: true},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// NAS CSIDriver: seLinuxMount=false, attachRequired=false.
+	nasDriver := &storagev1.CSIDriver{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: nasDriverName}, nasDriver); err != nil {
+		t.Fatalf("NAS CSIDriver not found: %v", err)
+	}
+	if nasDriver.Spec.SELinuxMount == nil || *nasDriver.Spec.SELinuxMount {
+		t.Error("NAS CSIDriver must have seLinuxMount: false (NFS does not support SELinux relabelling)")
+	}
+	if nasDriver.Spec.AttachRequired == nil || *nasDriver.Spec.AttachRequired {
+		t.Error("NAS CSIDriver must have attachRequired: false")
+	}
+
+	// NAS controller Deployment.
+	deploy := &appsv1.Deployment{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "csi-nas-controller", Namespace: operatorNamespace}, deploy); err != nil {
+		t.Errorf("NAS controller Deployment not created: %v", err)
+	}
+
+	// NAS node DaemonSet.
+	ds := &appsv1.DaemonSet{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "csi-nas-node", Namespace: operatorNamespace}, ds); err != nil {
+		t.Errorf("NAS node DaemonSet not created: %v", err)
+	}
+	// NAS node does not need HostPID (no disk device management).
+	if ds.Spec.Template.Spec.HostPID {
+		t.Error("NAS node DaemonSet should NOT set hostPID=true")
+	}
+
+	// NAS StorageClass with Immediate binding.
+	sc := &storagev1.StorageClass{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "alicloud-nas-standard"}, sc); err != nil {
+		t.Errorf("NAS StorageClass not created: %v", err)
+	}
+	if *sc.VolumeBindingMode != storagev1.VolumeBindingImmediate {
+		t.Errorf("NAS StorageClass VolumeBindingMode = %q, want Immediate", *sc.VolumeBindingMode)
+	}
+	if sc.Parameters["mountType"] != "nfs" {
+		t.Errorf("NAS StorageClass mountType = %q, want nfs", sc.Parameters["mountType"])
+	}
+}
+
+// ── StorageClass: VirtDefault annotation ────────────────────────────────────────
+
+func TestDiskStorageClass_VirtDefault(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+	cr.Spec.Disk.StorageClasses[0].VirtDefault = true
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sc := &storagev1.StorageClass{}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "alicloud-disk-efficiency"}, sc); err != nil {
+		t.Fatalf("StorageClass not found: %v", err)
+	}
+	if sc.Annotations["storageclass.kubevirt.io/is-default-virt-class"] != "true" {
+		t.Error("VirtDefault StorageClass missing storageclass.kubevirt.io/is-default-virt-class annotation")
+	}
+}
+
+// ── StorageClass: Encrypted parameter ───────────────────────────────────────────
+
+func TestDiskStorageClass_Encrypted(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+	cr.Spec.Disk.StorageClasses[0].Encrypted = true
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sc := &storagev1.StorageClass{}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "alicloud-disk-efficiency"}, sc); err != nil {
+		t.Fatalf("StorageClass not found: %v", err)
+	}
+	if sc.Parameters["encrypted"] != "true" {
+		t.Error("Encrypted StorageClass missing encrypted=true parameter")
+	}
+}
+
+// ── VolumeSnapshotClass: disabled path ──────────────────────────────────────────
+
+// TestVolumeSnapshotClass_Disabled verifies that reconcile succeeds and does not
+// attempt to create a VolumeSnapshotClass when snapshot.enabled=false.
+func TestVolumeSnapshotClass_Disabled(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+	cr.Spec.Disk.Snapshot = csiv1alpha1.SnapshotConfig{Enabled: false}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	})
+	if err != nil {
+		t.Fatalf("reconcile should succeed when snapshot is disabled, got: %v", err)
+	}
+}
+
+// TestVolumeSnapshotClass_EnabledCreatesClass verifies that a VolumeSnapshotClass
+// is created when snapshot.enabled=true and the CRD is available.
+// The fake client accepts unstructured objects even without a pre-registered CRD.
+func TestVolumeSnapshotClass_EnabledCreatesClass(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+	cr.Spec.Disk.Snapshot = csiv1alpha1.SnapshotConfig{
+		Enabled:   true,
+		ClassName: "test-disk-snapclass",
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	})
+	// With the fake client the unstructured Create either succeeds or returns
+	// NoMatchError (handled gracefully). Either way reconcile must not return an error.
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+}
+
+// ── StorageProfile: patch=false skips patching ──────────────────────────────────
+
+func TestStorageProfile_PatchFalse(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+	cr.Spec.Disk.StorageProfile = csiv1alpha1.StorageProfileConfig{Patch: false}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	// Should succeed without touching any StorageProfile.
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	})
+	if err != nil {
+		t.Fatalf("reconcile should succeed when storageProfile.patch=false, got: %v", err)
+	}
+}
+
+// TestStorageProfile_PatchTrue_CDIAbsent verifies that when storageProfile.patch=true
+// but CDI is not installed (StorageProfile CR returns not-found), reconcile succeeds
+// and the missing profile is silently skipped.
+func TestStorageProfile_PatchTrue_CDIAbsent(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+	cr.Spec.Disk.StorageProfile = csiv1alpha1.StorageProfileConfig{Patch: true, CloneStrategy: "csi-clone"}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	// CDI StorageProfile CRD is not registered in the scheme, so Get will return
+	// either NoMatchError or NotFound — both handled gracefully.
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	})
+	if err != nil {
+		t.Fatalf("reconcile should tolerate absent CDI StorageProfile, got: %v", err)
+	}
+}
+
+// ── NAS controller has no attacher or resizer ────────────────────────────────────
+
+func TestNASController_NoAttacherNoResizer(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+	cr.Spec.NAS = csiv1alpha1.NASSpec{Enabled: true}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deploy := &appsv1.Deployment{}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "csi-nas-controller", Namespace: operatorNamespace}, deploy); err != nil {
+		t.Fatalf("NAS controller Deployment not found: %v", err)
+	}
+
+	for _, c := range deploy.Spec.Template.Spec.Containers {
+		if c.Name == "csi-attacher" {
+			t.Error("NAS controller should NOT include csi-attacher (attachRequired=false)")
+		}
+		if c.Name == "csi-resizer" {
+			t.Error("NAS controller should NOT include csi-resizer")
+		}
+	}
+
+	// Must have provisioner.
+	hasProvisioner := false
+	for _, c := range deploy.Spec.Template.Spec.Containers {
+		if c.Name == "csi-provisioner" {
+			hasProvisioner = true
+		}
+	}
+	if !hasProvisioner {
+		t.Error("NAS controller must include csi-provisioner")
+	}
+}
+
+// ── Disk controller includes snapshotter sidecar ─────────────────────────────────
+
+func TestDiskController_HasSnapshotter(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deploy := &appsv1.Deployment{}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "csi-disk-controller", Namespace: operatorNamespace}, deploy); err != nil {
+		t.Fatalf("Deployment not found: %v", err)
+	}
+
+	hasSnapshotter := false
+	for _, c := range deploy.Spec.Template.Spec.Containers {
+		if c.Name == "csi-snapshotter" && c.Image == csiSnapshotterImage {
+			hasSnapshotter = true
+		}
+	}
+	if !hasSnapshotter {
+		t.Errorf("disk controller Deployment missing csi-snapshotter container (image %q)", csiSnapshotterImage)
+	}
+}

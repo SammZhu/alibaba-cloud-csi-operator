@@ -36,7 +36,7 @@ jobs:
         run: CGO_ENABLED=0 go build ./...
 
       - name: go test (unit only, no envtest)
-        run: go test -v -count=1 -timeout=120s -short $(go list ./... | grep -v /e2e)
+        run: go test -v -count=1 -timeout=120s $(go list ./... | grep -v /e2e)
 
   manifests:
     name: Validate generated manifests
@@ -52,9 +52,7 @@ jobs:
           cache: true
 
       - name: Install controller-gen
-        run: |
-          CONTROLLER_GEN_VERSION=$(grep 'controller-tools' go.mod | awk '{print $2}' || echo "v0.18.0")
-          go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
 
       - name: Regenerate manifests
         run: |
@@ -76,6 +74,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - name: Install operator-sdk
         run: |
           OS=$(go env GOOS)
@@ -83,16 +86,53 @@ jobs:
           curl -sSLo /usr/local/bin/operator-sdk \
             "https://github.com/operator-framework/operator-sdk/releases/download/v1.42.2/operator-sdk_${OS}_${ARCH}"
           chmod +x /usr/local/bin/operator-sdk
-        env:
-          GOFLAGS: ""
+
+      - name: Validate bundle
+        run: operator-sdk bundle validate ./bundle --select-optional suite=operatorframework
+
+  # Builds the operator container image with podman and runs Red Hat preflight checks.
+  # Requires QUAY_USERNAME / QUAY_PASSWORD secrets for push, and
+  # PFLT_PYXIS_API_TOKEN + PFLT_CERTIFICATION_PROJECT_ID for preflight submission.
+  container-build:
+    name: Build & Preflight (podman)
+    runs-on: ubuntu-latest
+    needs: build-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install podman
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y podman
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
 
-      - name: Validate bundle
-        run: operator-sdk bundle validate ./bundle
+      - name: Build operator image
+        run: |
+          podman build \
+            --platform linux/amd64 \
+            -t quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3 \
+            -f Dockerfile .
+
+      - name: Install preflight
+        run: |
+          curl -sSLo /usr/local/bin/preflight \
+            "https://github.com/redhat-openshift-ecosystem/openshift-preflight/releases/latest/download/preflight-linux-amd64"
+          chmod +x /usr/local/bin/preflight
+
+      - name: Run preflight check container (local, no submission)
+        run: |
+          preflight check container \
+            quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3 \
+            --container-engine podman \
+            --docker-config /dev/null
+        # NOTE: set PFLT_PYXIS_API_TOKEN and PFLT_CERTIFICATION_PROJECT_ID secrets
+        # to enable --submit and upload results to Red Hat Connect.
 
   cross-compile:
     name: Cross-compile Linux amd64 binary
@@ -112,6 +152,7 @@ jobs:
         run: |
           mkdir -p bin
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w" \
             -o bin/manager-linux-amd64 \
             ./cmd/main.go
           echo "Binary size: $(du -sh bin/manager-linux-amd64 | cut -f1)"

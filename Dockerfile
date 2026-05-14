@@ -1,33 +1,52 @@
-# Build the manager binary
+# ── Build stage ──────────────────────────────────────────────────────────────────
+# Use the official Go toolchain image for the build (multi-arch capable).
 FROM golang:1.24 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
 WORKDIR /workspace
-# Copy the Go Modules manifests
-COPY go.mod go.mod
-COPY go.sum go.sum
-# cache deps before building and copying source so that we don't need to re-download as much
-# and so that source changes don't invalidate our downloaded layer
+
+# Cache dependency downloads before copying source.
+COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the go source
-COPY cmd/main.go cmd/main.go
-COPY api/ api/
+# Copy source tree.
+COPY cmd/      cmd/
+COPY api/      api/
 COPY internal/ internal/
 
-# Build
-# the GOARCH has not a default value to allow the binary be built according to the host where the command
-# was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
-# the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
-# by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+# Fully static binary — required for ubi-micro (no glibc).
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -a -ldflags="-s -w" -o manager cmd/main.go
 
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+# ── Runtime stage — Red Hat UBI9 Micro ───────────────────────────────────────────
+# ubi9/ubi-micro is the smallest UBI image satisfying Red Hat Container Certification.
+# It ships no package manager, shell, or libc — suitable only for fully static binaries.
+FROM registry.access.redhat.com/ubi9/ubi-micro:9
+
+# ── Required labels for Red Hat Container Certification ──────────────────────────
+# https://access.redhat.com/documentation/en-us/red_hat_software_certification
+LABEL name="alibaba-cloud-csi-operator" \
+      vendor="SammZhu" \
+      version="v1.35.3" \
+      release="1" \
+      summary="OLM Operator for Alibaba Cloud CSI Driver on OpenShift External Platform" \
+      description="Installs and manages Alibaba Cloud CSI drivers (Disk, NAS, OSS) on \
+OpenShift clusters running in External Platform mode using RAM Role instance-principal \
+authentication — no AK/SK required." \
+      io.k8s.description="Installs and manages Alibaba Cloud CSI drivers on OpenShift \
+clusters running in External Platform mode." \
+      io.k8s.display-name="Alibaba Cloud CSI Operator" \
+      io.openshift.tags="storage,csi,alibaba-cloud,openshift"
+
+# LICENSE must be present in /licenses/ for Red Hat certification preflight checks.
+COPY LICENSE /licenses/LICENSE
+
 WORKDIR /
+
 COPY --from=builder /workspace/manager .
+
+# Run as non-root numeric UID 65532 (no /etc/passwd entry needed in ubi-micro).
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

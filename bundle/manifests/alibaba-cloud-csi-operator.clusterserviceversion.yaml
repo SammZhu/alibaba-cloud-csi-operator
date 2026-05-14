@@ -61,10 +61,19 @@ metadata:
       ]
     capabilities: Basic Install
     categories: Storage
+    certified: "false"
+    com.redhat.openshift.versions: v4.12-v4.18
     containerImage: quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3
-    createdAt: "2026-05-14T07:53:45Z"
+    createdAt: "2026-05-14T08:02:10Z"
     description: Installs and manages Alibaba Cloud CSI drivers (Disk/NAS/OSS) on
       OpenShift External Platform clusters using RAM Role instance principal authentication.
+    features.operators.openshift.io/disconnected: "true"
+    features.operators.openshift.io/fips-compliant: "false"
+    features.operators.openshift.io/proxy-aware: "false"
+    features.operators.openshift.io/tls-profiles: "false"
+    features.operators.openshift.io/token-auth-aws: "false"
+    features.operators.openshift.io/token-auth-azure: "false"
+    features.operators.openshift.io/token-auth-gcp: "false"
     operatorframework.io/suggested-namespace: kube-system
     operators.operatorframework.io/builder: operator-sdk-v1.42.2
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
@@ -291,8 +300,11 @@ spec:
                   capabilities:
                     drop:
                     - ALL
+                  readOnlyRootFilesystem: true
               securityContext:
+                runAsGroup: 65532
                 runAsNonRoot: true
+                runAsUser: 65532
                 seccompProfile:
                   type: RuntimeDefault
               serviceAccountName: alibaba-cloud-csi-operator-controller-manager
@@ -358,6 +370,7 @@ spec:
   - email: zhuhe@msn.com
     name: Sam Zhu
   maturity: alpha
+  minKubeVersion: 1.28.0
   provider:
     name: SammZhu
     url: https://github.com/SammZhu

@@ -5,9 +5,18 @@ metadata:
     alm-examples: '[]'
     capabilities: Basic Install
     categories: Storage
+    certified: "false"
+    com.redhat.openshift.versions: v4.12-v4.18
     containerImage: quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3
     description: Installs and manages Alibaba Cloud CSI drivers (Disk/NAS/OSS) on
       OpenShift External Platform clusters using RAM Role instance principal authentication.
+    features.operators.openshift.io/disconnected: "true"
+    features.operators.openshift.io/fips-compliant: "false"
+    features.operators.openshift.io/proxy-aware: "false"
+    features.operators.openshift.io/tls-profiles: "false"
+    features.operators.openshift.io/token-auth-aws: "false"
+    features.operators.openshift.io/token-auth-azure: "false"
+    features.operators.openshift.io/token-auth-gcp: "false"
     operatorframework.io/suggested-namespace: kube-system
     support: SammZhu
   name: alibaba-cloud-csi-operator.v0.0.0
@@ -195,4 +204,19 @@ spec:
   provider:
     name: SammZhu
     url: https://github.com/SammZhu
+  relatedImages:
+  - image: quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3
+    name: alibaba-cloud-csi-operator
+  - image: registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin:v1.35.3
+    name: csi-plugin
+  - image: registry.cn-hangzhou.aliyuncs.com/acs/csi-provisioner:v3.5.0
+    name: csi-provisioner
+  - image: registry.cn-hangzhou.aliyuncs.com/acs/csi-attacher:v4.3.0
+    name: csi-attacher
+  - image: registry.cn-hangzhou.aliyuncs.com/acs/csi-resizer:v1.8.0
+    name: csi-resizer
+  - image: registry.cn-hangzhou.aliyuncs.com/acs/csi-node-driver-registrar:v2.8.0
+    name: csi-node-driver-registrar
+  - image: registry.cn-hangzhou.aliyuncs.com/acs/livenessprobe:v2.10.0
+    name: liveness-probe
   version: 0.0.0

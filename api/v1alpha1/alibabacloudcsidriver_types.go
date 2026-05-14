@@ -1,0 +1,211 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// DiskStorageClassSpec defines a StorageClass to be created for disk volumes.
+type DiskStorageClassSpec struct {
+	// Name is the StorageClass name, e.g. alicloud-disk-efficiency.
+	Name string `json:"name"`
+	// Type is the Alibaba Cloud disk type, e.g. cloud_efficiency, cloud_essd.
+	Type string `json:"type"`
+	// ReclaimPolicy controls what happens to the PV when the PVC is deleted. Defaults to Delete.
+	// +kubebuilder:default=Delete
+	// +kubebuilder:validation:Enum=Delete;Retain
+	ReclaimPolicy string `json:"reclaimPolicy,omitempty"`
+	// AllowVolumeExpansion enables online volume expansion. Defaults to true.
+	// +kubebuilder:default=true
+	AllowVolumeExpansion bool `json:"allowVolumeExpansion,omitempty"`
+}
+
+// DiskSpec configures the Alibaba Cloud Disk (EBS) CSI driver.
+type DiskSpec struct {
+	// Enabled controls whether the disk CSI driver components are deployed.
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled"`
+	// DefaultStorageClass marks the first StorageClass in the list as the cluster default.
+	// +kubebuilder:default=true
+	DefaultStorageClass bool `json:"defaultStorageClass,omitempty"`
+	// StorageClasses is the list of StorageClass objects to create.
+	// +kubebuilder:validation:MinItems=1
+	StorageClasses []DiskStorageClassSpec `json:"storageClasses,omitempty"`
+}
+
+// NASSpec configures the Alibaba Cloud NAS (file storage) CSI driver.
+type NASSpec struct {
+	// Enabled controls whether the NAS CSI driver components are deployed.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+}
+
+// OSSSpec configures the Alibaba Cloud OSS (object storage) CSI driver.
+type OSSSpec struct {
+	// Enabled controls whether the OSS CSI driver components are deployed.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+}
+
+// AuthSpec configures the authentication method for the CSI driver to call Alibaba Cloud APIs.
+type AuthSpec struct {
+	// RAMToken specifies the ECS instance metadata token version used for RAM Role auth.
+	// Use "v2" (recommended, IMDSv2 with TTL) or "v1".
+	// +kubebuilder:default=v2
+	// +kubebuilder:validation:Enum=v1;v2
+	RAMToken string `json:"ramToken,omitempty"`
+}
+
+// ControllerSpec configures the CSI controller Deployment scheduling.
+type ControllerSpec struct {
+	// Replicas is the number of CSI controller Pod replicas. Defaults to 2 for HA.
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=1
+	Replicas int32 `json:"replicas,omitempty"`
+	// NodeSelector pins the controller Pods to specific nodes (typically control-plane nodes).
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// Tolerations allow the controller Pods to be scheduled on tainted nodes.
+	// +optional
+	Tolerations []TolerationSpec `json:"tolerations,omitempty"`
+}
+
+// TolerationSpec mirrors a subset of corev1.Toleration for CRD compatibility.
+type TolerationSpec struct {
+	// Key is the taint key the toleration applies to.
+	Key string `json:"key,omitempty"`
+	// Operator is the relationship between the key and value. Defaults to Equal.
+	// +kubebuilder:validation:Enum=Exists;Equal
+	Operator string `json:"operator,omitempty"`
+	// Value is the taint value the toleration matches (only for operator Equal).
+	Value string `json:"value,omitempty"`
+	// Effect is the taint effect to tolerate.
+	// +kubebuilder:validation:Enum=NoSchedule;PreferNoSchedule;NoExecute
+	Effect string `json:"effect,omitempty"`
+}
+
+// AlibabaCloudCSIDriverSpec defines the desired state of AlibabaCloudCSIDriver.
+type AlibabaCloudCSIDriverSpec struct {
+	// Disk configures the Alibaba Cloud Disk (EBS/cloud disk) CSI driver.
+	// +optional
+	Disk DiskSpec `json:"disk,omitempty"`
+
+	// NAS configures the Alibaba Cloud NAS file-storage CSI driver. Disabled by default (Phase 2).
+	// +optional
+	NAS NASSpec `json:"nas,omitempty"`
+
+	// OSS configures the Alibaba Cloud OSS object-storage CSI driver. Disabled by default (Phase 3).
+	// +optional
+	OSS OSSSpec `json:"oss,omitempty"`
+
+	// ImageTag is the upstream alibaba-cloud-csi-driver image tag to deploy, e.g. v1.35.3.
+	// +kubebuilder:default="v1.35.3"
+	ImageTag string `json:"imageTag,omitempty"`
+
+	// Auth configures how the CSI driver authenticates to Alibaba Cloud APIs.
+	// +optional
+	Auth AuthSpec `json:"auth,omitempty"`
+
+	// Controller configures the CSI controller Deployment (scheduling, replicas).
+	// +optional
+	Controller ControllerSpec `json:"controller,omitempty"`
+}
+
+// ConditionType represents a CSI driver condition.
+type ConditionType string
+
+const (
+	// ConditionAvailable indicates all managed components are deployed and healthy.
+	ConditionAvailable ConditionType = "Available"
+	// ConditionProgressing indicates the operator is actively reconciling components.
+	ConditionProgressing ConditionType = "Progressing"
+	// ConditionDegraded indicates one or more components have failed.
+	ConditionDegraded ConditionType = "Degraded"
+)
+
+// CSIDriverCondition describes the current state of a CSI driver component.
+type CSIDriverCondition struct {
+	// Type is the condition type.
+	Type ConditionType `json:"type"`
+	// Status is True, False, or Unknown.
+	// +kubebuilder:validation:Enum=True;False;Unknown
+	Status string `json:"status"`
+	// Reason is a short CamelCase string describing the reason for the condition.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+	// Message is a human-readable description.
+	// +optional
+	Message string `json:"message,omitempty"`
+	// LastTransitionTime is when the condition last changed.
+	// +optional
+	LastTransitionTime metav1.Time `json:"lastTransitionTime,omitempty"`
+}
+
+// AlibabaCloudCSIDriverStatus defines the observed state of AlibabaCloudCSIDriver.
+type AlibabaCloudCSIDriverStatus struct {
+	// ObservedGeneration is the generation of the spec that was last reconciled.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions contains the current conditions of the CSI driver deployment.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []CSIDriverCondition `json:"conditions,omitempty"`
+
+	// DiskDriverReady is true when the Disk CSI controller and node DaemonSet are running.
+	// +optional
+	DiskDriverReady bool `json:"diskDriverReady,omitempty"`
+
+	// NASDriverReady is true when the NAS CSI driver components are running.
+	// +optional
+	NASDriverReady bool `json:"nasDriverReady,omitempty"`
+
+	// OSSDriverReady is true when the OSS CSI driver components are running.
+	// +optional
+	OSSDriverReady bool `json:"ossDriverReady,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster,shortName=alicsid
+// +kubebuilder:printcolumn:name="DiskReady",type=boolean,JSONPath=`.status.diskDriverReady`
+// +kubebuilder:printcolumn:name="Available",type=string,JSONPath=`.status.conditions[?(@.type=='Available')].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// AlibabaCloudCSIDriver is the Schema for the alibabacloudcsidrivers API.
+type AlibabaCloudCSIDriver struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   AlibabaCloudCSIDriverSpec   `json:"spec,omitempty"`
+	Status AlibabaCloudCSIDriverStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// AlibabaCloudCSIDriverList contains a list of AlibabaCloudCSIDriver.
+type AlibabaCloudCSIDriverList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []AlibabaCloudCSIDriver `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&AlibabaCloudCSIDriver{}, &AlibabaCloudCSIDriverList{})
+}

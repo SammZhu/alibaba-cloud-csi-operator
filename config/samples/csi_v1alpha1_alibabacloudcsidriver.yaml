@@ -1,0 +1,46 @@
+apiVersion: csi.alibabacloud.com/v1alpha1
+kind: AlibabaCloudCSIDriver
+metadata:
+  name: cluster          # singleton — always use this name
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: alibaba-cloud-csi-operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # ── Disk (EBS / cloud disk) — Phase 1 ───────────────────────────────────────
+  disk:
+    enabled: true
+    defaultStorageClass: true
+    storageClasses:
+      - name: alicloud-disk-efficiency
+        type: cloud_efficiency
+        reclaimPolicy: Delete
+        allowVolumeExpansion: true
+      - name: alicloud-disk-essd
+        type: cloud_essd
+        reclaimPolicy: Delete
+        allowVolumeExpansion: true
+
+  # ── NAS file storage — Phase 2 (disabled) ───────────────────────────────────
+  nas:
+    enabled: false
+
+  # ── OSS object storage — Phase 3 (disabled) ─────────────────────────────────
+  oss:
+    enabled: false
+
+  # ── Upstream CSI driver image tag ───────────────────────────────────────────
+  imageTag: v1.35.3
+
+  # ── Auth: RAM Role instance principal, no AK/SK needed ──────────────────────
+  auth:
+    ramToken: v2
+
+  # ── Controller Deployment: pin to control-plane nodes ───────────────────────
+  controller:
+    replicas: 2
+    nodeSelector:
+      node-role.kubernetes.io/master: ""
+    tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule

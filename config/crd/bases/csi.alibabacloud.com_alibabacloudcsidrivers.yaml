@@ -1,0 +1,260 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: alibabacloudcsidrivers.csi.alibabacloud.com
+spec:
+  group: csi.alibabacloud.com
+  names:
+    kind: AlibabaCloudCSIDriver
+    listKind: AlibabaCloudCSIDriverList
+    plural: alibabacloudcsidrivers
+    shortNames:
+    - alicsid
+    singular: alibabacloudcsidriver
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.diskDriverReady
+      name: DiskReady
+      type: boolean
+    - jsonPath: .status.conditions[?(@.type=='Available')].status
+      name: Available
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AlibabaCloudCSIDriver is the Schema for the alibabacloudcsidrivers
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AlibabaCloudCSIDriverSpec defines the desired state of AlibabaCloudCSIDriver.
+            properties:
+              auth:
+                description: Auth configures how the CSI driver authenticates to Alibaba
+                  Cloud APIs.
+                properties:
+                  ramToken:
+                    default: v2
+                    description: |-
+                      RAMToken specifies the ECS instance metadata token version used for RAM Role auth.
+                      Use "v2" (recommended, IMDSv2 with TTL) or "v1".
+                    enum:
+                    - v1
+                    - v2
+                    type: string
+                type: object
+              controller:
+                description: Controller configures the CSI controller Deployment (scheduling,
+                  replicas).
+                properties:
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: NodeSelector pins the controller Pods to specific
+                      nodes (typically control-plane nodes).
+                    type: object
+                  replicas:
+                    default: 2
+                    description: Replicas is the number of CSI controller Pod replicas.
+                      Defaults to 2 for HA.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  tolerations:
+                    description: Tolerations allow the controller Pods to be scheduled
+                      on tainted nodes.
+                    items:
+                      description: TolerationSpec mirrors a subset of corev1.Toleration
+                        for CRD compatibility.
+                      properties:
+                        effect:
+                          description: Effect is the taint effect to tolerate.
+                          enum:
+                          - NoSchedule
+                          - PreferNoSchedule
+                          - NoExecute
+                          type: string
+                        key:
+                          description: Key is the taint key the toleration applies
+                            to.
+                          type: string
+                        operator:
+                          description: Operator is the relationship between the key
+                            and value. Defaults to Equal.
+                          enum:
+                          - Exists
+                          - Equal
+                          type: string
+                        value:
+                          description: Value is the taint value the toleration matches
+                            (only for operator Equal).
+                          type: string
+                      type: object
+                    type: array
+                type: object
+              disk:
+                description: Disk configures the Alibaba Cloud Disk (EBS/cloud disk)
+                  CSI driver.
+                properties:
+                  defaultStorageClass:
+                    default: true
+                    description: DefaultStorageClass marks the first StorageClass
+                      in the list as the cluster default.
+                    type: boolean
+                  enabled:
+                    default: true
+                    description: Enabled controls whether the disk CSI driver components
+                      are deployed.
+                    type: boolean
+                  storageClasses:
+                    description: StorageClasses is the list of StorageClass objects
+                      to create.
+                    items:
+                      description: DiskStorageClassSpec defines a StorageClass to
+                        be created for disk volumes.
+                      properties:
+                        allowVolumeExpansion:
+                          default: true
+                          description: AllowVolumeExpansion enables online volume
+                            expansion. Defaults to true.
+                          type: boolean
+                        name:
+                          description: Name is the StorageClass name, e.g. alicloud-disk-efficiency.
+                          type: string
+                        reclaimPolicy:
+                          default: Delete
+                          description: ReclaimPolicy controls what happens to the
+                            PV when the PVC is deleted. Defaults to Delete.
+                          enum:
+                          - Delete
+                          - Retain
+                          type: string
+                        type:
+                          description: Type is the Alibaba Cloud disk type, e.g. cloud_efficiency,
+                            cloud_essd.
+                          type: string
+                      required:
+                      - name
+                      - type
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - enabled
+                type: object
+              imageTag:
+                default: v1.35.3
+                description: ImageTag is the upstream alibaba-cloud-csi-driver image
+                  tag to deploy, e.g. v1.35.3.
+                type: string
+              nas:
+                description: NAS configures the Alibaba Cloud NAS file-storage CSI
+                  driver. Disabled by default (Phase 2).
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled controls whether the NAS CSI driver components
+                      are deployed.
+                    type: boolean
+                required:
+                - enabled
+                type: object
+              oss:
+                description: OSS configures the Alibaba Cloud OSS object-storage CSI
+                  driver. Disabled by default (Phase 3).
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled controls whether the OSS CSI driver components
+                      are deployed.
+                    type: boolean
+                required:
+                - enabled
+                type: object
+            type: object
+          status:
+            description: AlibabaCloudCSIDriverStatus defines the observed state of
+              AlibabaCloudCSIDriver.
+            properties:
+              conditions:
+                description: Conditions contains the current conditions of the CSI
+                  driver deployment.
+                items:
+                  description: CSIDriverCondition describes the current state of a
+                    CSI driver component.
+                  properties:
+                    lastTransitionTime:
+                      description: LastTransitionTime is when the condition last changed.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message is a human-readable description.
+                      type: string
+                    reason:
+                      description: Reason is a short CamelCase string describing the
+                        reason for the condition.
+                      type: string
+                    status:
+                      description: Status is True, False, or Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: Type is the condition type.
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              diskDriverReady:
+                description: DiskDriverReady is true when the Disk CSI controller
+                  and node DaemonSet are running.
+                type: boolean
+              nasDriverReady:
+                description: NASDriverReady is true when the NAS CSI driver components
+                  are running.
+                type: boolean
+              observedGeneration:
+                description: ObservedGeneration is the generation of the spec that
+                  was last reconciled.
+                format: int64
+                type: integer
+              ossDriverReady:
+                description: OSSDriverReady is true when the OSS CSI driver components
+                  are running.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

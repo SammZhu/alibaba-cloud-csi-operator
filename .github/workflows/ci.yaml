@@ -112,11 +112,24 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Compute image tags
+        id: tags
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          VERSION=$(awk -F'?= ' '/^VERSION \?=/ {print $2; exit}' Makefile)
+          BASE=quay.io/samzhu/alibaba-cloud-csi-operator
+          echo "version=v${VERSION}"             >> "$GITHUB_OUTPUT"
+          echo "image_sha=${BASE}:${SHORT_SHA}"  >> "$GITHUB_OUTPUT"
+          echo "image_ver=${BASE}:v${VERSION}"   >> "$GITHUB_OUTPUT"
+          echo "image_latest=${BASE}:latest"     >> "$GITHUB_OUTPUT"
+
       - name: Build operator image
         run: |
           podman build \
             --platform linux/amd64 \
-            -t quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3 \
+            -t ${{ steps.tags.outputs.image_ver }} \
+            -t ${{ steps.tags.outputs.image_sha }} \
+            -t ${{ steps.tags.outputs.image_latest }} \
             -f Dockerfile .
 
       - name: Install preflight
@@ -128,11 +141,24 @@ jobs:
       - name: Run preflight check container (local, no submission)
         run: |
           preflight check container \
-            quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3 \
+            ${{ steps.tags.outputs.image_ver }} \
             --container-engine podman \
             --docker-config /dev/null
         # NOTE: set PFLT_PYXIS_API_TOKEN and PFLT_CERTIFICATION_PROJECT_ID secrets
         # to enable --submit and upload results to Red Hat Connect.
+
+      # Push only on push-to-main and only if registry secrets exist.
+      # Fork builds and PRs skip this step automatically.
+      - name: Push operator image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.QUAY_USERNAME != ''
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+        run: |
+          echo "$QUAY_PASSWORD" | podman login quay.io -u "$QUAY_USERNAME" --password-stdin
+          podman push ${{ steps.tags.outputs.image_ver }}
+          podman push ${{ steps.tags.outputs.image_sha }}
+          podman push ${{ steps.tags.outputs.image_latest }}
 
   cross-compile:
     name: Cross-compile Linux amd64 binary

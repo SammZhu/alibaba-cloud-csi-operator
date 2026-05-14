@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 # ── Runtime stage — Red Hat UBI9 Micro ───────────────────────────────────────────
 # ubi9/ubi-micro is the smallest UBI image satisfying Red Hat Container Certification.
 # It ships no package manager, shell, or libc — suitable only for fully static binaries.
-FROM registry.access.redhat.com/ubi9/ubi-micro:9
+FROM registry.access.redhat.com/ubi9/ubi-micro:latest
 
 # ── Required labels for Red Hat Container Certification ──────────────────────────
 # https://access.redhat.com/documentation/en-us/red_hat_software_certification

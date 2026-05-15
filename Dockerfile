@@ -1,6 +1,6 @@
 # ── Build stage ──────────────────────────────────────────────────────────────────
 # Use the official Go toolchain image for the build (multi-arch capable).
-FROM golang:1.24 AS builder
+FROM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 

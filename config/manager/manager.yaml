@@ -5,6 +5,17 @@ metadata:
     control-plane: controller-manager
     app.kubernetes.io/name: alibaba-cloud-csi-operator
     app.kubernetes.io/managed-by: kustomize
+    # Pod Security Admission — the operator itself runs restricted, but the
+    # CSI driver components it deploys (DaemonSet with hostPath, hostNetwork,
+    # privileged init containers) require privileged. Set the namespace to
+    # privileged and disable SCC label sync so OpenShift does not strip the
+    # security context from the CSI pods after deployment.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    security.openshift.io/scc.podSecurityLabelSync: "false"
+    openshift.io/cluster-monitoring: "true"
   name: system
 ---
 apiVersion: apps/v1

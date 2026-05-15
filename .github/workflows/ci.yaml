@@ -178,6 +178,55 @@ jobs:
           mkdir -p "$DOCKER_CONFIG" && echo '{}' > "$DOCKER_CONFIG/config.json"
           preflight check container ${{ steps.tags.outputs.image_ver }}
 
+      # Trivy scan — Red Hat-equivalent CVE gate.
+      # Fails the job on HIGH or CRITICAL CVEs in the operator image.
+      # Runs on every push and PR (not gated on main) so scoring catches
+      # regressions before merge. Vulnerabilities in the upstream UBI base
+      # image are common — when one appears, either bump the base image
+      # tag or add to .trivyignore with a documented justification.
+      - name: Trivy CVE scan (operator image)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.tags.outputs.image_ver }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os,library
+
+      # Bundle build/push/preflight — validates that the OLM bundle metadata,
+      # CSV examples, and CRDs are all consistent with the operator image
+      # we just published. preflight check operator is the bundle-side
+      # equivalent of preflight check container.
+      - name: Build and push bundle image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+        run: |
+          if [ -z "$QUAY_USERNAME" ]; then
+            echo "QUAY_USERNAME secret not configured — skipping bundle push."
+            exit 0
+          fi
+          # operator-sdk is needed for bundle generation. Install matches the
+          # bundle-validate job earlier in the workflow.
+          curl -sSLo /usr/local/bin/operator-sdk \
+            "https://github.com/operator-framework/operator-sdk/releases/download/v1.42.2/operator-sdk_linux_amd64"
+          chmod +x /usr/local/bin/operator-sdk
+          # Use Makefile defaults for BUNDLE_IMG — they expand from VERSION
+          # to quay.io/samzhu/alibaba-cloud-csi-operator-bundle:v$(VERSION).
+          make bundle bundle-build bundle-push IMG=${{ steps.tags.outputs.image_ver }}
+
+      - name: Run preflight check operator (bundle, no submission)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          DOCKER_CONFIG: /tmp/empty-docker-config
+        run: |
+          mkdir -p "$DOCKER_CONFIG" && echo '{}' > "$DOCKER_CONFIG/config.json"
+          # Bundle image follows the same {version} tag as the operator image.
+          BUNDLE_IMG=quay.io/samzhu/alibaba-cloud-csi-operator-bundle:${{ steps.tags.outputs.version }}
+          preflight check operator "$BUNDLE_IMG"
+
   cross-compile:
     name: Cross-compile Linux amd64 binary
     runs-on: ubuntu-latest

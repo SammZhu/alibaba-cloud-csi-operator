@@ -1,0 +1,24 @@
+# Default-deny baseline for the operator namespace.
+#
+# Why deny-by-default:
+#   - Any ingress not explicitly allowed by another NetworkPolicy is rejected.
+#   - The companion allow-metrics-traffic.yaml whitelists the Prometheus
+#     scrape path on :8443 from namespaces labelled metrics=enabled.
+#   - Egress is intentionally unrestricted: the operator must reach the
+#     Kubernetes API server, and the CSI driver components it deploys
+#     reach the Alibaba Cloud OpenAPI endpoints. Locking egress down
+#     requires per-cluster DNS/IP knowledge and is left to cluster admins.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: alibaba-cloud-csi-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: deny-default-ingress
+  namespace: system
+spec:
+  # Empty podSelector matches every pod in the namespace.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  # No ingress rules → all ingress denied unless allowed by another policy.

@@ -101,9 +101,6 @@ spec:
           node-role.kubernetes.io/master: ""
     ```
   displayName: Alibaba Cloud CSI Operator
-  icon:
-  - base64data: ""
-    mediatype: image/png
   install:
     spec:
       clusterPermissions:

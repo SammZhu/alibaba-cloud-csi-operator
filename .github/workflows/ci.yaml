@@ -52,7 +52,9 @@ jobs:
           cache: true
 
       - name: Install controller-gen
-        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+        # Pin to the same version as Makefile CONTROLLER_TOOLS_VERSION so the
+        # regenerated manifests match what was committed locally with `make manifests`.
+        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.18.0
 
       - name: Regenerate manifests
         run: |
@@ -139,22 +141,31 @@ jobs:
           chmod +x /usr/local/bin/preflight
 
       - name: Run preflight check container (local, no submission)
+        # --container-engine was removed in newer preflight releases (auto-detected).
+        # Pass an empty docker config so preflight does not try to use ambient creds.
+        env:
+          DOCKER_CONFIG: /tmp/empty-docker-config
         run: |
-          preflight check container \
-            ${{ steps.tags.outputs.image_ver }} \
-            --container-engine podman \
-            --docker-config /dev/null
+          mkdir -p "$DOCKER_CONFIG" && echo '{}' > "$DOCKER_CONFIG/config.json"
+          preflight check container ${{ steps.tags.outputs.image_ver }}
         # NOTE: set PFLT_PYXIS_API_TOKEN and PFLT_CERTIFICATION_PROJECT_ID secrets
         # to enable --submit and upload results to Red Hat Connect.
 
       # Push only on push-to-main and only if registry secrets exist.
       # Fork builds and PRs skip this step automatically.
+      # GitHub Actions does NOT allow `secrets` / `env` references in step-level
+      # `if` conditions. Gate on event type at step level, then push the secret
+      # check down into bash so the step always runs and no-ops on forks.
       - name: Push operator image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.QUAY_USERNAME != ''
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
           QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
         run: |
+          if [ -z "$QUAY_USERNAME" ]; then
+            echo "QUAY_USERNAME secret not configured — skipping push."
+            exit 0
+          fi
           echo "$QUAY_PASSWORD" | podman login quay.io -u "$QUAY_USERNAME" --password-stdin
           podman push ${{ steps.tags.outputs.image_ver }}
           podman push ${{ steps.tags.outputs.image_sha }}

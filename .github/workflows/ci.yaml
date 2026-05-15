@@ -217,15 +217,16 @@ jobs:
           # to quay.io/samzhu/alibaba-cloud-csi-operator-bundle:v$(VERSION).
           make bundle bundle-build bundle-push IMG=${{ steps.tags.outputs.image_ver }}
 
-      - name: Run preflight check operator (bundle, no submission)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          DOCKER_CONFIG: /tmp/empty-docker-config
-        run: |
-          mkdir -p "$DOCKER_CONFIG" && echo '{}' > "$DOCKER_CONFIG/config.json"
-          # Bundle image follows the same {version} tag as the operator image.
-          BUNDLE_IMG=quay.io/samzhu/alibaba-cloud-csi-operator-bundle:${{ steps.tags.outputs.version }}
-          preflight check operator "$BUNDLE_IMG"
+      # NOTE: `preflight check operator` is intentionally NOT run in CI.
+      # Unlike `preflight check container` which inspects the image manifest
+      # statically, `preflight check operator` actually deploys the bundle via
+      # OLM to a live cluster and runs the OperatorSDK Scorecard against it.
+      # That requires a real OpenShift cluster with OLM installed (KUBECONFIG).
+      # The static checks that DON'T need a cluster are already covered by:
+      #   - `Validate OLM bundle` job (operator-sdk bundle validate)
+      #   - `Validate generated manifests` job (controller-gen diff check)
+      # Run preflight check operator manually against a real cluster:
+      #   preflight check operator quay.io/samzhu/alibaba-cloud-csi-operator-bundle:vX.Y.Z
 
   cross-compile:
     name: Cross-compile Linux amd64 binary

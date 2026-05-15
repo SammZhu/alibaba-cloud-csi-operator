@@ -134,25 +134,13 @@ jobs:
             -t ${{ steps.tags.outputs.image_latest }} \
             -f Dockerfile .
 
-      - name: Install preflight
-        run: |
-          curl -sSLo /usr/local/bin/preflight \
-            "https://github.com/redhat-openshift-ecosystem/openshift-preflight/releases/latest/download/preflight-linux-amd64"
-          chmod +x /usr/local/bin/preflight
-
-      - name: Run preflight check container (local, no submission)
-        # --container-engine was removed in newer preflight releases (auto-detected).
-        # Pass an empty docker config so preflight does not try to use ambient creds.
-        env:
-          DOCKER_CONFIG: /tmp/empty-docker-config
-        run: |
-          mkdir -p "$DOCKER_CONFIG" && echo '{}' > "$DOCKER_CONFIG/config.json"
-          preflight check container ${{ steps.tags.outputs.image_ver }}
-        # NOTE: set PFLT_PYXIS_API_TOKEN and PFLT_CERTIFICATION_PROJECT_ID secrets
-        # to enable --submit and upload results to Red Hat Connect.
-
-      # Push only on push-to-main and only if registry secrets exist.
-      # Fork builds and PRs skip this step automatically.
+      # Push BEFORE preflight: preflight pulls the image manifest directly
+      # from the registry, NOT from local podman storage, so the image must
+      # already be in the registry. Without this ordering, preflight fetches
+      # whatever stale tag exists in quay.io — possibly a different
+      # architecture than the one CI just built — and fails with
+      # "platform mismatch: requested amd64 but image is arm64".
+      #
       # GitHub Actions does NOT allow `secrets` / `env` references in step-level
       # `if` conditions. Gate on event type at step level, then push the secret
       # check down into bash so the step always runs and no-ops on forks.
@@ -170,6 +158,25 @@ jobs:
           podman push ${{ steps.tags.outputs.image_ver }}
           podman push ${{ steps.tags.outputs.image_sha }}
           podman push ${{ steps.tags.outputs.image_latest }}
+
+      - name: Install preflight
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          curl -sSLo /usr/local/bin/preflight \
+            "https://github.com/redhat-openshift-ecosystem/openshift-preflight/releases/latest/download/preflight-linux-amd64"
+          chmod +x /usr/local/bin/preflight
+
+      # Runs against the just-pushed image. PRs skip preflight because they
+      # do not push, and there is no image in the registry to validate.
+      # NOTE: set PFLT_PYXIS_API_TOKEN and PFLT_CERTIFICATION_PROJECT_ID secrets
+      # to enable --submit and upload results to Red Hat Connect.
+      - name: Run preflight check container (local, no submission)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          DOCKER_CONFIG: /tmp/empty-docker-config
+        run: |
+          mkdir -p "$DOCKER_CONFIG" && echo '{}' > "$DOCKER_CONFIG/config.json"
+          preflight check container ${{ steps.tags.outputs.image_ver }}
 
   cross-compile:
     name: Cross-compile Linux amd64 binary

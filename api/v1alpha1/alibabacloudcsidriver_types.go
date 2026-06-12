@@ -40,6 +40,17 @@ type DiskStorageClassSpec struct {
 	// Encrypted enables server-side disk encryption at rest.
 	// +optional
 	Encrypted bool `json:"encrypted,omitempty"`
+	// VolumeMode is the volume mode advertised to OpenShift Virtualization via the
+	// CDI StorageProfile claimPropertySets for this StorageClass:
+	//   Block       — raw block device, best VM OS-disk I/O (no filesystem layer), RWO
+	//   Filesystem  — general container workloads, RWO (default)
+	// This only affects the StorageProfile the operator patches; StorageClass objects
+	// themselves carry no volumeMode. A general-purpose disk class should stay
+	// Filesystem; a VM OS-disk class (virtDefault) should be Block.
+	// +kubebuilder:default=Filesystem
+	// +kubebuilder:validation:Enum=Block;Filesystem
+	// +optional
+	VolumeMode string `json:"volumeMode,omitempty"`
 }
 
 // SnapshotConfig configures VolumeSnapshot support for the disk CSI driver.

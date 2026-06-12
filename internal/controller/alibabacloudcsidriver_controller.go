@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -250,8 +251,11 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskDriver(ctx context.Context, 
 		if err := r.ensureDiskStorageClass(ctx, sc, isDefault); err != nil {
 			return fmt.Errorf("StorageClass %s: %w", sc.Name, err)
 		}
-		// Patch CDI StorageProfile for OKV compatibility (disk = Block mode).
-		if err := r.ensureStorageProfile(ctx, sc.Name, cr.Spec.Disk.StorageProfile, true, snapClassName); err != nil {
+		// Patch CDI StorageProfile for OKV compatibility. The volumeMode is taken
+		// per-StorageClass: a VM OS-disk class uses Block, a general class uses
+		// Filesystem. Both are ReadWriteOnce (disk attaches to a single node).
+		claimSets := diskClaimPropertySets(sc.VolumeMode)
+		if err := r.ensureStorageProfile(ctx, sc.Name, cr.Spec.Disk.StorageProfile, claimSets, snapClassName); err != nil {
 			return fmt.Errorf("StorageProfile %s: %w", sc.Name, err)
 		}
 	}
@@ -524,7 +528,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASDriver(ctx context.Context, c
 		}
 		// Patch CDI StorageProfile for OKV compatibility (NAS = RWX Filesystem mode).
 		// NAS snapshots are not yet implemented — pass empty snapshotClass.
-		if err := r.ensureStorageProfile(ctx, sc.Name, cr.Spec.NAS.StorageProfile, false, ""); err != nil {
+		if err := r.ensureStorageProfile(ctx, sc.Name, cr.Spec.NAS.StorageProfile, nasClaimPropertySets(), ""); err != nil {
 			return fmt.Errorf("StorageProfile %s: %w", sc.Name, err)
 		}
 	}
@@ -803,12 +807,52 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureVolumeSnapshotClass(ctx context.
 
 // ── CDI StorageProfile ───────────────────────────────────────────────────────────
 
+// diskClaimPropertySets returns the CDI claimPropertySets for a disk StorageClass.
+// Cloud disks attach to a single node, so the access mode is always ReadWriteOnce;
+// the volume mode follows the StorageClass intent:
+//
+//	"Block"      → RWO + Block (raw block device, best VM OS-disk performance)
+//	"Filesystem" → RWO + Filesystem (general container workloads; also the default
+//	               when volumeMode is empty)
+//
+// Matches the CDI built-in table for ebs.csi.aws.com → {{rwo, block}}.
+func diskClaimPropertySets(volumeMode string) []interface{} {
+	mode := "Filesystem"
+	if strings.EqualFold(volumeMode, "Block") {
+		mode = "Block"
+	}
+	return []interface{}{
+		map[string]interface{}{
+			"accessModes": []interface{}{"ReadWriteOnce"},
+			"volumeMode":  mode,
+		},
+	}
+}
+
+// nasClaimPropertySets returns the CDI claimPropertySets for a NAS StorageClass.
+// NAS provides ReadWriteMany Filesystem volumes required for live VM migration,
+// with a ReadWriteOnce Filesystem fallback for single-attach workloads.
+// Matches the CDI built-in table for efs.csi.aws.com → {{rwx, file}, {rwo, file}}.
+func nasClaimPropertySets() []interface{} {
+	return []interface{}{
+		map[string]interface{}{
+			"accessModes": []interface{}{"ReadWriteMany"},
+			"volumeMode":  "Filesystem",
+		},
+		map[string]interface{}{
+			"accessModes": []interface{}{"ReadWriteOnce"},
+			"volumeMode":  "Filesystem",
+		},
+	}
+}
+
 // ensureStorageProfile patches the CDI StorageProfile for the given StorageClass
 // to set correct claimPropertySets, cloneStrategy, and snapshotClass for
 // OpenShift Virtualization.
 //
-// isBlock=true  → disk: RWO + Block (better VM performance, avoids filesystem overhead)
-// isBlock=false → NAS:  RWX + Filesystem (live migration requires ReadWriteMany)
+// claimPropertySets is the desired CDI claimPropertySets, computed by the caller
+// via diskClaimPropertySets / nasClaimPropertySets so that per-StorageClass volume
+// modes (disk Block vs disk Filesystem vs NAS RWX) are honoured.
 //
 // snapClassName is the VolumeSnapshotClass name to link via spec.snapshotClass.
 // CDI uses this to select the right VolumeSnapshotClass for snapshot-based clones
@@ -818,7 +862,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureVolumeSnapshotClass(ctx context.
 //   - cfg.Patch is false
 //   - CDI is not installed (NoMatchError)
 //   - The StorageProfile does not exist yet (CDI creates it lazily)
-func (r *AlibabaCloudCSIDriverReconciler) ensureStorageProfile(ctx context.Context, name string, cfg csiv1alpha1.StorageProfileConfig, isBlock bool, snapClassName string) error {
+func (r *AlibabaCloudCSIDriverReconciler) ensureStorageProfile(ctx context.Context, name string, cfg csiv1alpha1.StorageProfileConfig, claimPropertySets []interface{}, snapClassName string) error {
 	if !cfg.Patch {
 		return nil
 	}
@@ -849,32 +893,6 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureStorageProfile(ctx context.Conte
 	cloneStrategy := cfg.CloneStrategy
 	if cloneStrategy == "" {
 		cloneStrategy = "csi-clone"
-	}
-
-	var claimPropertySets []interface{}
-	if isBlock {
-		// Disk: Block volumeMode gives VMs direct block device access with better
-		// I/O performance and avoids double filesystem overhead.
-		// Matches CDI built-in table: ebs.csi.aws.com → {{rwo, block}}.
-		claimPropertySets = []interface{}{
-			map[string]interface{}{
-				"accessModes": []interface{}{"ReadWriteOnce"},
-				"volumeMode":  "Block",
-			},
-		}
-	} else {
-		// NAS: ReadWriteMany Filesystem for live migration support.
-		// Matches CDI built-in table: efs.csi.aws.com → {{rwx, file}, {rwo, file}}.
-		claimPropertySets = []interface{}{
-			map[string]interface{}{
-				"accessModes": []interface{}{"ReadWriteMany"},
-				"volumeMode":  "Filesystem",
-			},
-			map[string]interface{}{
-				"accessModes": []interface{}{"ReadWriteOnce"},
-				"volumeMode":  "Filesystem",
-			},
-		}
 	}
 
 	specPatch := map[string]interface{}{

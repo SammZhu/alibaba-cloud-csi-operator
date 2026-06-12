@@ -677,3 +677,61 @@ func TestDiskController_HasSnapshotter(t *testing.T) {
 		t.Errorf("disk controller Deployment missing csi-snapshotter container (image %q)", csiSnapshotterImage)
 	}
 }
+
+// ── StorageProfile claimPropertySets: per-StorageClass volume mode ───────────────
+
+// firstClaimSet extracts (accessMode, volumeMode) from the first claimPropertySet.
+func firstClaimSet(t *testing.T, sets []interface{}) (string, string) {
+	t.Helper()
+	if len(sets) == 0 {
+		t.Fatalf("claimPropertySets is empty")
+	}
+	m, ok := sets[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("claimPropertySets[0] is not a map: %T", sets[0])
+	}
+	modes, ok := m["accessModes"].([]interface{})
+	if !ok || len(modes) == 0 {
+		t.Fatalf("claimPropertySets[0].accessModes missing: %v", m)
+	}
+	access, _ := modes[0].(string)
+	vm, _ := m["volumeMode"].(string)
+	return access, vm
+}
+
+func TestDiskClaimPropertySets_Block(t *testing.T) {
+	sets := diskClaimPropertySets("Block")
+	if len(sets) != 1 {
+		t.Fatalf("expected 1 claimPropertySet for disk, got %d", len(sets))
+	}
+	access, vm := firstClaimSet(t, sets)
+	if access != "ReadWriteOnce" || vm != "Block" {
+		t.Errorf("disk Block: want RWO+Block, got %s+%s", access, vm)
+	}
+}
+
+func TestDiskClaimPropertySets_FilesystemAndDefault(t *testing.T) {
+	// Explicit Filesystem and empty (default) must both yield RWO+Filesystem.
+	for _, mode := range []string{"Filesystem", "", "filesystem", "garbage"} {
+		sets := diskClaimPropertySets(mode)
+		access, vm := firstClaimSet(t, sets)
+		if access != "ReadWriteOnce" || vm != "Filesystem" {
+			t.Errorf("disk %q: want RWO+Filesystem, got %s+%s", mode, access, vm)
+		}
+	}
+	// Case-insensitive Block.
+	if _, vm := firstClaimSet(t, diskClaimPropertySets("block")); vm != "Block" {
+		t.Errorf("disk \"block\" (lowercase) should map to Block, got %s", vm)
+	}
+}
+
+func TestNASClaimPropertySets_RWX(t *testing.T) {
+	sets := nasClaimPropertySets()
+	if len(sets) != 2 {
+		t.Fatalf("expected 2 claimPropertySets for NAS (RWX + RWO fallback), got %d", len(sets))
+	}
+	access, vm := firstClaimSet(t, sets)
+	if access != "ReadWriteMany" || vm != "Filesystem" {
+		t.Errorf("NAS primary: want RWX+Filesystem, got %s+%s", access, vm)
+	}
+}

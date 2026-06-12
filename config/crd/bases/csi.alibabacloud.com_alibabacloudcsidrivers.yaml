@@ -184,6 +184,20 @@ spec:
                             VirtDefault annotates this StorageClass as the default for OpenShift Virtualization (OKV/KubeVirt).
                             Sets the storageclass.kubevirt.io/is-default-virt-class: "true" annotation.
                           type: boolean
+                        volumeMode:
+                          default: Filesystem
+                          description: |-
+                            VolumeMode is the volume mode advertised to OpenShift Virtualization via the
+                            CDI StorageProfile claimPropertySets for this StorageClass:
+                              Block       — raw block device, best VM OS-disk I/O (no filesystem layer), RWO
+                              Filesystem  — general container workloads, RWO (default)
+                            This only affects the StorageProfile the operator patches; StorageClass objects
+                            themselves carry no volumeMode. A general-purpose disk class should stay
+                            Filesystem; a VM OS-disk class (virtDefault) should be Block.
+                          enum:
+                          - Block
+                          - Filesystem
+                          type: string
                       required:
                       - name
                       - type

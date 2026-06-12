@@ -179,6 +179,26 @@ make fmt vet              # format and vet
 go test ./...             # run unit tests (no envtest required)
 ```
 
+## Testing
+
+Four tiers, fastest first:
+
+| Tier | Command | Needs | Covers |
+|------|---------|-------|--------|
+| **Unit** | `go test ./internal/...` | nothing (fake client) | reconcile helpers, claim-property-sets, conditions |
+| **kind smoke** | `make test-kind-smoke` | kind + docker/podman + go | runs the operator out-of-cluster against a real API server, applies a CR, and asserts it creates the CSIDriver objects, StorageClasses (incl. the Block VM class), disk+NAS controller Deployments + node DaemonSets, RBAC, the disk VolumeSnapshotClass (and **no** NAS one), and `status` Available/Ready. **Hermetic — no Alibaba cloud.** Runs in CI. |
+| **e2e** | `make test-e2e` | kind + image build | operator-sdk scaffold e2e (operator deploys in-cluster, metrics endpoint) |
+| **live** | n/a (manual) | real OpenShift on Alibaba | actual PVC / NAS / snapshot provisioning against the cloud (tracked as #32-34) |
+
+The kind smoke is the practical "does the operator actually work" gate: it exercises
+the real reconcile loop end-to-end without any cloud credentials. The CSI driver Pods
+themselves won't become Ready in kind (no cloud, no `/dev`) — that is the live tier's job.
+
+```bash
+make test-kind-smoke                 # create cluster, run, assert, tear down
+KEEP_CLUSTER=1 ./hack/kind-smoke.sh  # leave it up to inspect (prints KUBECONFIG)
+```
+
 ## Status
 
 ```

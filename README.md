@@ -11,9 +11,57 @@ single `AlibabaCloudCSIDriver` custom resource.
 
 | Phase | Storage type | Status |
 |-------|-------------|--------|
-| P1    | Disk (cloud_efficiency, cloud_essd) | ✅ Implemented |
-| P2    | NAS file storage | 🔜 Planned |
-| P3    | OSS object storage | 🔜 Planned |
+| P1    | Disk / EBS (cloud_efficiency, cloud_essd; Block + Filesystem) | ✅ Implemented |
+| P1    | NAS file storage (ReadWriteMany, for VM live migration) | ✅ Implemented |
+| —     | OSS object storage | Backup target only (via OADP), **not a mount driver** — see Scope |
+
+## Positioning — driver vs. operator
+
+This project is **not** a reimplementation of the CSI driver. The data-plane driver
+(provision / attach / mount / expand / snapshot against Alibaba Cloud APIs) is the upstream
+[`kubernetes-sigs/alibaba-cloud-csi-driver`](https://github.com/kubernetes-sigs/alibaba-cloud-csi-driver).
+This repo is the **OpenShift-native lifecycle + integration layer** around that driver — the same
+relationship as `aws-ebs-csi-driver-operator` ↔ `aws-ebs-csi-driver`.
+
+| | Upstream driver | This operator |
+|---|---|---|
+| Layer | Data plane (CSI gRPC) | Control plane (OLM lifecycle) |
+| Responsibility | Talk to ECS/NAS APIs, mount volumes | Install / reconcile / upgrade the driver on OpenShift |
+
+Why it must exist: AWS / Azure / GCP / vSphere all ship a first-party CSI operator inside OpenShift,
+but **Alibaba Cloud is not an OpenShift-supported platform**, so in External / `none` platform mode
+nothing installs or manages the Alibaba CSI driver for you. This operator provides what the bare
+upstream driver does not:
+
+- **OLM packaging** (CatalogSource / bundle / CSV) and an independent release line.
+- **OpenShift / RHCOS glue**: `seLinuxMount: true`, SCC `privileged` binding, HA controller pinned to
+  control-plane nodes, IMDSv2 RAM-role auth (`ramToken: v2`, no AK/SK).
+- **OpenShift Virtualization (OKV/KubeVirt) integration**: CDI does not recognise the Alibaba drivers,
+  so the operator patches `StorageProfile` (claimPropertySets / cloneStrategy), exposes a per-class
+  `volumeMode` (Block for VM OS disks, Filesystem for general PVCs), and a disk `VolumeSnapshotClass`.
+- **Air-gap** image strategy and opinionated, ready-to-use StorageClasses.
+
+## Scope — Alibaba Cloud storage service coverage
+
+CSI is only meaningful for *volume*-type storage. This operator targets what general OpenShift and
+OKV workloads actually need — block (EBS) and file (NAS):
+
+| Alibaba service | Volume-type? | Upstream plugin | This operator | Rationale |
+|---|---|---|---|---|
+| **EBS / cloud disk (ESSD)** | Block | ✅ diskplugin | ✅ **core** | RWO; VM OS disk (Block) + general PVCs; CSI snapshots |
+| **NAS file storage** | File | ✅ nasplugin | ✅ **core** | RWX; VM live migration + shared data |
+| **OSS object storage** | Object (FUSE-mountable, but shouldn't) | ✅ ossplugin (ossfs) | **Backup only** | ossfs has poor random I/O and non-POSIX semantics → used as the OADP backup target (S3) / CDI import source, not a runtime volume |
+| **Tablestore** | ❌ not a volume (NoSQL, SDK/API) | ❌ (impossible by nature) | ❌ N/A | Like DynamoDB — apps use the SDK; never a PV |
+| **Apsara File Storage for HDFS** | HDFS protocol (not POSIX mount) | ❌ (no standard CSI) | ❌ out of scope | Big-data via Hadoop/HDFS client, not a POSIX volume |
+| **DBFS (database file storage)** | Database-oriented shared block | ⚠️ specialised (dbfs) | ❌ not yet | Niche (self-managed DBs); not needed for general/OKV workloads |
+| **CPFS (parallel file storage)** | Parallel FS | ✅ cpfs | ❌ not yet | HPC only; very high cost (P3) |
+
+**Not done ≠ not considered.** OSS is deliberately positioned as backup/import, not a mount driver.
+Tablestore and HDFS-version are not "volumes" at all (NoSQL API / HDFS protocol) and are outside CSI
+by nature. DBFS and CPFS are volume-type and have upstream plugins, but serve niche database / HPC
+scenarios outside the current target (general workloads + virtualization). The `AlibabaCloudCSIDriver`
+CR is already structured per backend (`disk` / `nas` / `oss`), so adding e.g. `dbfs` later is a spec
+addition, not an architecture change — there is simply no scenario demand for it now.
 
 ## Architecture
 

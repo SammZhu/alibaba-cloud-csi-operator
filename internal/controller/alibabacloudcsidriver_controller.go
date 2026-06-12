@@ -58,7 +58,12 @@ const (
 	fieldManager = "alibaba-cloud-csi-operator"
 
 	defaultDiskSnapClassName = "alibaba-cloud-disk-snapclass"
-	defaultNASSnapClassName  = "alibaba-cloud-nas-snapclass"
+	// NOTE: there is intentionally no NAS snapshot class. The upstream NAS CSI
+	// controller (nasplugin.csi.alibabacloud.com) does NOT implement
+	// CreateSnapshot/DeleteSnapshot — its ControllerGetCapabilities advertises
+	// only CREATE_DELETE_VOLUME and EXPAND_VOLUME. A VolumeSnapshotClass for NAS
+	// would therefore be a footgun (every VolumeSnapshot would fail at the driver).
+	// NAS-backed volumes are protected via OADP file-system backup (kopia) to OSS.
 )
 
 // AlibabaCloudCSIDriverReconciler reconciles a AlibabaCloudCSIDriver object
@@ -504,6 +509,13 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskStorageClass(ctx context.Con
 
 // ── NAS Driver ───────────────────────────────────────────────────────────────────
 
+// ensureNASDriver deploys the NAS CSI components, StorageClasses and CDI
+// StorageProfiles. It deliberately creates NO VolumeSnapshotClass: the upstream
+// NAS CSI controller does not implement CreateSnapshot (CREATE_DELETE_SNAPSHOT is
+// not in its ControllerGetCapabilities), so NAS-backed PVCs — including
+// OpenShift Virtualization VM disks that need ReadWriteMany for live migration —
+// cannot be snapshotted via CSI. Protect NAS volumes with OADP file-system
+// backup (kopia) to OSS instead of VolumeSnapshot / VirtualMachineSnapshot.
 func (r *AlibabaCloudCSIDriverReconciler) ensureNASDriver(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver) error {
 	imageTag := cr.Spec.ImageTag
 	if imageTag == "" {
@@ -762,6 +774,10 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASStorageClass(ctx context.Cont
 // ensureVolumeSnapshotClass creates a VolumeSnapshotClass for the given driver.
 // The function gracefully skips creation if the snapshot.storage.k8s.io CRDs are
 // not installed on the cluster (returns nil instead of an error).
+//
+// Only the disk driver is wired to call this (see ensureDiskDriver). The NAS CSI
+// driver does not implement CreateSnapshot upstream, so no NAS snapshot class is
+// ever created — see the defaultDiskSnapClassName const block.
 func (r *AlibabaCloudCSIDriverReconciler) ensureVolumeSnapshotClass(ctx context.Context, driverName string, cfg csiv1alpha1.SnapshotConfig) error {
 	if !cfg.Enabled {
 		return nil
@@ -769,11 +785,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureVolumeSnapshotClass(ctx context.
 
 	className := cfg.ClassName
 	if className == "" {
-		if driverName == diskDriverName {
-			className = defaultDiskSnapClassName
-		} else {
-			className = defaultNASSnapClassName
-		}
+		className = defaultDiskSnapClassName
 	}
 
 	u := &unstructured.Unstructured{

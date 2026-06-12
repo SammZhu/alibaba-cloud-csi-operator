@@ -64,7 +64,7 @@ metadata:
     certified: "false"
     com.redhat.openshift.versions: v4.12-v4.18
     containerImage: quay.io/samzhu/alibaba-cloud-csi-operator:v0.1.0
-    createdAt: "2026-06-12T04:42:42Z"
+    createdAt: "2026-06-12T15:11:12Z"
     description: Installs and manages Alibaba Cloud CSI drivers (Disk/NAS/OSS) on
       OpenShift External Platform clusters using RAM Role instance principal authentication.
     features.operators.openshift.io/disconnected: "true"

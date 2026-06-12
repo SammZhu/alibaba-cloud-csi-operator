@@ -729,6 +729,65 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASNodeDaemonSet(ctx context.Con
 	return createOrUpdate(ctx, r.Client, ds)
 }
 
+// nasStorageClassParameters builds the upstream NAS CSI StorageClass parameters
+// for the requested provisioning mode (NASStorageClassSpec.VolumeAs):
+//
+//	filesystem (default) — the driver creates a NAS filesystem + mount target per
+//	  PV; needs fileSystemType + the cluster network (regionId/zoneId/vpcId/vSwitchId).
+//	subpath — the driver carves subpaths from a pre-existing NAS filesystem; needs
+//	  the server (mount-target) endpoint.
+//
+// Returns the params and any cluster network fields that are missing for the
+// chosen mode (so the caller / a validator can warn that provisioning will fail).
+func nasStorageClassParameters(sc csiv1alpha1.NASStorageClassSpec) (params map[string]string, missing []string) {
+	volumeAs := sc.VolumeAs
+	if volumeAs == "" {
+		volumeAs = "filesystem"
+	}
+	params = map[string]string{"volumeAs": volumeAs}
+
+	switch volumeAs {
+	case "subpath":
+		mountProtocol := sc.MountProtocol
+		if mountProtocol == "" {
+			mountProtocol = "nfs"
+		}
+		params["mountType"] = mountProtocol
+		if sc.Server != "" {
+			params["server"] = sc.Server
+		} else {
+			missing = append(missing, "server")
+		}
+		if sc.StorageType != "" {
+			params["storageType"] = sc.StorageType
+		}
+	default: // filesystem
+		fst := sc.FileSystemType
+		if fst == "" {
+			fst = "standard"
+		}
+		params["fileSystemType"] = fst
+		if sc.StorageType != "" {
+			params["storageType"] = sc.StorageType
+		}
+		for _, f := range []struct {
+			key, val string
+		}{
+			{"regionId", sc.RegionID},
+			{"zoneId", sc.ZoneID},
+			{"vpcId", sc.VpcID},
+			{"vSwitchId", sc.VSwitchID},
+		} {
+			if f.val != "" {
+				params[f.key] = f.val
+			} else {
+				missing = append(missing, f.key)
+			}
+		}
+	}
+	return params, missing
+}
+
 func (r *AlibabaCloudCSIDriverReconciler) ensureNASStorageClass(ctx context.Context, sc csiv1alpha1.NASStorageClassSpec, _ bool) error {
 	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
 	if sc.ReclaimPolicy == "Retain" {
@@ -736,21 +795,17 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASStorageClass(ctx context.Cont
 	}
 	allowExpansion := sc.AllowVolumeExpansion
 
-	mountProtocol := sc.MountProtocol
-	if mountProtocol == "" {
-		mountProtocol = "nfs"
-	}
-
 	annotations := map[string]string{}
 	if sc.VirtDefault {
 		annotations["storageclass.kubevirt.io/is-default-virt-class"] = "true"
 	}
 
-	params := map[string]string{
-		"mountType": mountProtocol,
-	}
-	if sc.StorageType != "" {
-		params["storageType"] = sc.StorageType
+	params, missing := nasStorageClassParameters(sc)
+	if len(missing) > 0 {
+		// Don't fail — the SC is still created, but it cannot dynamically provision
+		// until the missing fields are supplied (PVCs would stay Pending). Surface it.
+		logf.FromContext(ctx).Info("NAS StorageClass is missing fields required for dynamic provisioning",
+			"storageClass", sc.Name, "volumeAs", params["volumeAs"], "missing", missing)
 	}
 
 	obj := &storagev1.StorageClass{

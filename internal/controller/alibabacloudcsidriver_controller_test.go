@@ -434,8 +434,16 @@ func TestNASDriver_CreatesComponents(t *testing.T) {
 	if *sc.VolumeBindingMode != storagev1.VolumeBindingImmediate {
 		t.Errorf("NAS StorageClass VolumeBindingMode = %q, want Immediate", *sc.VolumeBindingMode)
 	}
-	if sc.Parameters["mountType"] != "nfs" {
-		t.Errorf("NAS StorageClass mountType = %q, want nfs", sc.Parameters["mountType"])
+	// Default provisioning mode is filesystem (dynamic create); mountType is a
+	// subpath-only param and must not appear here.
+	if sc.Parameters["volumeAs"] != "filesystem" {
+		t.Errorf("NAS StorageClass volumeAs = %q, want filesystem", sc.Parameters["volumeAs"])
+	}
+	if sc.Parameters["fileSystemType"] != "standard" {
+		t.Errorf("NAS StorageClass fileSystemType = %q, want standard", sc.Parameters["fileSystemType"])
+	}
+	if _, ok := sc.Parameters["mountType"]; ok {
+		t.Error("filesystem-mode NAS StorageClass must not set mountType (subpath-only param)")
 	}
 }
 
@@ -733,5 +741,78 @@ func TestNASClaimPropertySets_RWX(t *testing.T) {
 	access, vm := firstClaimSet(t, sets)
 	if access != "ReadWriteMany" || vm != "Filesystem" {
 		t.Errorf("NAS primary: want RWX+Filesystem, got %s+%s", access, vm)
+	}
+}
+
+// ── NAS StorageClass parameters: filesystem vs subpath provisioning ──────────────
+
+func TestNASStorageClassParameters_FilesystemMode(t *testing.T) {
+	sc := csiv1alpha1.NASStorageClassSpec{
+		Name:        "alicloud-nas-performance",
+		VolumeAs:    "filesystem",
+		StorageType: "Performance",
+		RegionID:    "cn-wulanchabu",
+		ZoneID:      "cn-wulanchabu-a",
+		VpcID:       "vpc-abc",
+		VSwitchID:   "vsw-xyz",
+	}
+	params, missing := nasStorageClassParameters(sc)
+	if len(missing) != 0 {
+		t.Fatalf("filesystem with full network: expected no missing, got %v", missing)
+	}
+	want := map[string]string{
+		"volumeAs": "filesystem", "fileSystemType": "standard", "storageType": "Performance",
+		"regionId": "cn-wulanchabu", "zoneId": "cn-wulanchabu-a", "vpcId": "vpc-abc", "vSwitchId": "vsw-xyz",
+	}
+	for k, v := range want {
+		if params[k] != v {
+			t.Errorf("param %s = %q, want %q", k, params[k], v)
+		}
+	}
+	if _, ok := params["server"]; ok {
+		t.Errorf("filesystem mode must not set a subpath server param")
+	}
+}
+
+func TestNASStorageClassParameters_FilesystemDefaultsAndMissing(t *testing.T) {
+	// Empty VolumeAs defaults to filesystem; no network → reports all 4 missing.
+	params, missing := nasStorageClassParameters(csiv1alpha1.NASStorageClassSpec{Name: "n"})
+	if params["volumeAs"] != "filesystem" {
+		t.Errorf("empty VolumeAs should default to filesystem, got %q", params["volumeAs"])
+	}
+	if params["fileSystemType"] != "standard" {
+		t.Errorf("empty FileSystemType should default to standard, got %q", params["fileSystemType"])
+	}
+	wantMissing := map[string]bool{"regionId": true, "zoneId": true, "vpcId": true, "vSwitchId": true}
+	if len(missing) != len(wantMissing) {
+		t.Fatalf("expected %d missing fields, got %v", len(wantMissing), missing)
+	}
+	for _, m := range missing {
+		if !wantMissing[m] {
+			t.Errorf("unexpected missing field %q", m)
+		}
+	}
+}
+
+func TestNASStorageClassParameters_SubpathMode(t *testing.T) {
+	sc := csiv1alpha1.NASStorageClassSpec{
+		Name:     "nas-sub",
+		VolumeAs: "subpath",
+		Server:   "abc.cn-hangzhou.nas.aliyuncs.com:/",
+	}
+	params, missing := nasStorageClassParameters(sc)
+	if len(missing) != 0 {
+		t.Fatalf("subpath with server: expected no missing, got %v", missing)
+	}
+	if params["volumeAs"] != "subpath" || params["server"] != "abc.cn-hangzhou.nas.aliyuncs.com:/" {
+		t.Errorf("subpath params wrong: %v", params)
+	}
+	if params["mountType"] != "nfs" {
+		t.Errorf("subpath default mountType should be nfs, got %q", params["mountType"])
+	}
+	// Subpath without a server reports it missing (PVCs would stay Pending).
+	_, missing2 := nasStorageClassParameters(csiv1alpha1.NASStorageClassSpec{Name: "n", VolumeAs: "subpath"})
+	if len(missing2) != 1 || missing2[0] != "server" {
+		t.Errorf("subpath without server should report [server] missing, got %v", missing2)
 	}
 }

@@ -108,9 +108,43 @@ type DiskSpec struct {
 type NASStorageClassSpec struct {
 	// Name is the StorageClass name, e.g. alicloud-nas-standard.
 	Name string `json:"name"`
-	// StorageType is the NAS storage type, e.g. standard, performance.
+	// VolumeAs selects the NAS dynamic-provisioning mode:
+	//   "filesystem" (default) — the driver creates a NAS filesystem + mount target
+	//     per PV. Requires the cluster network so the mount target is reachable by the
+	//     nodes: set RegionID/ZoneID/VpcID/VSwitchID (and FileSystemType/StorageType).
+	//   "subpath" — the driver carves subpaths out of a PRE-EXISTING NAS filesystem;
+	//     requires Server (the mount-target endpoint).
+	// Leaving this unset and providing no Server makes the upstream driver default to
+	// subpath mode with no server, which leaves every PVC Pending — hence the
+	// filesystem default here.
+	// +kubebuilder:default=filesystem
+	// +kubebuilder:validation:Enum=filesystem;subpath
+	VolumeAs string `json:"volumeAs,omitempty"`
+	// StorageType is the NAS storage type, e.g. Capacity, Performance.
 	// +optional
 	StorageType string `json:"storageType,omitempty"`
+	// FileSystemType is the NAS filesystem type for filesystem mode:
+	//   "standard" (general-purpose, default) or "extreme".
+	// +kubebuilder:default=standard
+	// +kubebuilder:validation:Enum=standard;extreme
+	FileSystemType string `json:"fileSystemType,omitempty"`
+	// RegionID is the region the NAS filesystem is created in (filesystem mode).
+	// +optional
+	RegionID string `json:"regionId,omitempty"`
+	// ZoneID is the zone the NAS mount target is created in (filesystem mode). Pick a
+	// zone where the worker nodes run so the mount target is in-zone.
+	// +optional
+	ZoneID string `json:"zoneId,omitempty"`
+	// VpcID is the VPC the NAS mount target belongs to (filesystem mode).
+	// +optional
+	VpcID string `json:"vpcId,omitempty"`
+	// VSwitchID is the vSwitch the NAS mount target is placed in (filesystem mode).
+	// +optional
+	VSwitchID string `json:"vSwitchId,omitempty"`
+	// Server is the NAS mount-target endpoint for subpath mode
+	// (e.g. "0123abcd-xyz.cn-hangzhou.nas.aliyuncs.com:/"). Required when VolumeAs=subpath.
+	// +optional
+	Server string `json:"server,omitempty"`
 	// MountProtocol is the mount protocol, either "nfs" (default) or "cnfs".
 	// +kubebuilder:default=nfs
 	// +kubebuilder:validation:Enum=nfs;cnfs

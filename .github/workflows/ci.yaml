@@ -3,6 +3,11 @@ name: CI
 on:
   push:
     branches: ["main"]
+    # Cut a release whenever a v* tag is pushed (e.g. v0.1.0). The tag is the
+    # operator release version and must equal v$(Makefile VERSION). On a tag the
+    # CI builds + pushes operator, bundle and catalog images at the tag, then
+    # syncs the version into the alibaba-openshift deploy repo (sync-deploy-tag).
+    tags: ["v*"]
   pull_request:
     branches: ["main"]
 
@@ -114,23 +119,40 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Compute the image references.
+      #   main push  → primary tag = short SHA (mutable dev image)
+      #   v* tag push → primary tag = the tag name (= v$(VERSION)); release.
+      # The release tag MUST equal v$(Makefile VERSION) so the bundle CSV version
+      # and the image tag agree — fail loudly otherwise.
       - name: Compute image tags
         id: tags
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
           VERSION=$(awk -F'?= ' '/^VERSION \?=/ {print $2; exit}' Makefile)
           BASE=quay.io/samzhu/alibaba-cloud-csi-operator
-          echo "version=v${VERSION}"             >> "$GITHUB_OUTPUT"
-          echo "image_sha=${BASE}:${SHORT_SHA}"  >> "$GITHUB_OUTPUT"
-          echo "image_ver=${BASE}:v${VERSION}"   >> "$GITHUB_OUTPUT"
-          echo "image_latest=${BASE}:latest"     >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            if [[ "${TAG}" != "v${VERSION}" ]]; then
+              echo "::error::release tag ${TAG} != v${VERSION} (Makefile VERSION). Bump VERSION in lockstep with the tag."
+              exit 1
+            fi
+            echo "is_release=true"                  >> "$GITHUB_OUTPUT"
+            echo "primary=${BASE}:${TAG}"           >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false"                 >> "$GITHUB_OUTPUT"
+            echo "primary=${BASE}:${SHORT_SHA}"     >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=v${VERSION}"                >> "$GITHUB_OUTPUT"
+          echo "image_ver=${BASE}:v${VERSION}"      >> "$GITHUB_OUTPUT"
+          echo "image_latest=${BASE}:latest"        >> "$GITHUB_OUTPUT"
+          echo "bundle_img=${BASE}-bundle:v${VERSION}"   >> "$GITHUB_OUTPUT"
+          echo "catalog_img=${BASE}-catalog:v${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build operator image
         run: |
           podman build \
             --platform linux/amd64 \
-            -t ${{ steps.tags.outputs.image_ver }} \
-            -t ${{ steps.tags.outputs.image_sha }} \
+            -t ${{ steps.tags.outputs.primary }} \
             -t ${{ steps.tags.outputs.image_latest }} \
             -f Dockerfile .
 
@@ -145,7 +167,7 @@ jobs:
       # `if` conditions. Gate on event type at step level, then push the secret
       # check down into bash so the step always runs and no-ops on forks.
       - name: Push operator image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         env:
           QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
           QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
@@ -155,12 +177,11 @@ jobs:
             exit 0
           fi
           echo "$QUAY_PASSWORD" | podman login quay.io -u "$QUAY_USERNAME" --password-stdin
-          podman push ${{ steps.tags.outputs.image_ver }}
-          podman push ${{ steps.tags.outputs.image_sha }}
+          podman push ${{ steps.tags.outputs.primary }}
           podman push ${{ steps.tags.outputs.image_latest }}
 
       - name: Install preflight
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         run: |
           curl -sSLo /usr/local/bin/preflight \
             "https://github.com/redhat-openshift-ecosystem/openshift-preflight/releases/latest/download/preflight-linux-amd64"
@@ -171,12 +192,12 @@ jobs:
       # NOTE: set PFLT_PYXIS_API_TOKEN and PFLT_CERTIFICATION_PROJECT_ID secrets
       # to enable --submit and upload results to Red Hat Connect.
       - name: Run preflight check container (local, no submission)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         env:
           DOCKER_CONFIG: /tmp/empty-docker-config
         run: |
           mkdir -p "$DOCKER_CONFIG" && echo '{}' > "$DOCKER_CONFIG/config.json"
-          preflight check container ${{ steps.tags.outputs.image_ver }}
+          preflight check container ${{ steps.tags.outputs.primary }}
 
       # Trivy scan — Red Hat-equivalent CVE gate.
       # Fails the job on HIGH or CRITICAL CVEs in the operator image.
@@ -187,35 +208,38 @@ jobs:
       - name: Trivy CVE scan (operator image)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ steps.tags.outputs.image_ver }}
+          image-ref: ${{ steps.tags.outputs.primary }}
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           vuln-type: os,library
 
-      # Bundle build/push/preflight — validates that the OLM bundle metadata,
-      # CSV examples, and CRDs are all consistent with the operator image
-      # we just published. preflight check operator is the bundle-side
-      # equivalent of preflight check container.
-      - name: Build and push bundle image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # Bundle + catalog — RELEASE ONLY (v* tag). These are the OLM artifacts the
+      # air-gap mirror pre-pulls and OLM installs from. Built only on a tag so
+      # :v$(VERSION) bundle/catalog are immutable release images (not rebuilt on
+      # every main commit). The bundle must be pushed before catalog-build, which
+      # runs `opm index add --bundles <bundle image>` against the registry.
+      - name: Build and push bundle + catalog (release only)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
           QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
         run: |
           if [ -z "$QUAY_USERNAME" ]; then
-            echo "QUAY_USERNAME secret not configured — skipping bundle push."
+            echo "QUAY_USERNAME secret not configured — skipping bundle/catalog push."
             exit 0
           fi
-          # operator-sdk is needed for bundle generation. Install matches the
-          # bundle-validate job earlier in the workflow.
+          echo "$QUAY_PASSWORD" | podman login quay.io -u "$QUAY_USERNAME" --password-stdin
+          # operator-sdk for bundle generation (matches the bundle-validate job).
           curl -sSLo /usr/local/bin/operator-sdk \
             "https://github.com/operator-framework/operator-sdk/releases/download/v1.42.2/operator-sdk_linux_amd64"
           chmod +x /usr/local/bin/operator-sdk
-          # Use Makefile defaults for BUNDLE_IMG — they expand from VERSION
-          # to quay.io/samzhu/alibaba-cloud-csi-operator-bundle:v$(VERSION).
+          # BUNDLE_IMG / CATALOG_IMG expand from VERSION to
+          # quay.io/samzhu/alibaba-cloud-csi-operator-{bundle,catalog}:v$(VERSION).
+          # CONTAINER_TOOL defaults to podman (Makefile), matching the login above.
           make bundle bundle-build bundle-push IMG=${{ steps.tags.outputs.image_ver }}
+          make catalog-build catalog-push BUNDLE_IMGS=${{ steps.tags.outputs.bundle_img }}
 
       # NOTE: `preflight check operator` is intentionally NOT run in CI.
       # Unlike `preflight check container` which inspects the image manifest
@@ -257,3 +281,56 @@ jobs:
           name: manager-linux-amd64
           path: bin/manager-linux-amd64
           retention-days: 7
+
+  sync-deploy-tag:
+    name: Sync CSI operator version to alibaba-openshift
+    runs-on: ubuntu-latest
+    needs: container-build
+    # Only on a v* release tag (not main SHA builds). After the operator/bundle/
+    # catalog images are pushed, bump csi_operator_image_tag in the deploy repo's
+    # SSOT (ansible/vars/images.yml) and commit it, so a plain `git pull` over
+    # there picks up the new version (used by 04-prepare-mirror's air-gap pre-pull
+    # list and build-mirror-tarball.sh). Mirrors the CAPA provider's sync-deploy-tag.
+    # Requires repo secret ANSIBLE_REPO_TOKEN = a PAT with contents:write on
+    # SammZhu/alibaba-openshift. Without it, this job no-ops.
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Check sync token configured
+        id: guard
+        env:
+          ANSIBLE_REPO_TOKEN: ${{ secrets.ANSIBLE_REPO_TOKEN }}
+        run: |
+          if [ -z "$ANSIBLE_REPO_TOKEN" ]; then
+            echo "ANSIBLE_REPO_TOKEN not set — skipping deploy-repo sync (configure it to enable)."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout alibaba-openshift
+        if: steps.guard.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: SammZhu/alibaba-openshift
+          ref: main
+          token: ${{ secrets.ANSIBLE_REPO_TOKEN }}
+
+      - name: Bump csi_operator_image_tag and push
+        if: steps.guard.outputs.ok == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          file=ansible/vars/images.yml
+          sed -i -E "s|^csi_operator_image_tag:.*|csi_operator_image_tag: \"${TAG}\"|" "$file"
+          grep -E '^csi_operator_image_tag:' "$file"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "csi_operator_image_tag already ${TAG} — nothing to commit."
+            exit 0
+          fi
+          git add "$file"
+          git commit -m "chore(images): bump csi_operator_image_tag to ${TAG} (auto from csi-operator CI)"
+          git push origin main

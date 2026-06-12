@@ -1,9 +1,15 @@
-# VERSION defines the project version for the bundle.
+# VERSION defines the OPERATOR project version for the bundle / image tags.
+# This is the operator's OWN release line (independent semver, like the CAPA
+# provider's v0.1.x). It is NOT the bundled upstream alibaba-cloud-csi-driver
+# version — that is a separate knob (AlibabaCloudCSIDriver.spec.imageTag, default
+# v1.35.3, set in the API type / CR / controller). Bump VERSION when the operator
+# code or manifests change; bump the driver imageTag when tracking a new upstream
+# csi-driver release. The two move independently.
 # Update this value when you upgrade the version of your project.
 # To re-generate a bundle for another specific version without changing the standard setup, you can:
 # - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= 1.35.3
+VERSION ?= 0.1.0
 
 # CHANNELS define the bundle channels used in the bundle.
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "candidate,fast,stable")

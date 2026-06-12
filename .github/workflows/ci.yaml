@@ -61,8 +61,11 @@ jobs:
 
       - name: Install kind
         run: |
-          curl -sSLo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
-          chmod +x /usr/local/bin/kind
+          # -f so curl fails on a 404 instead of writing the error body; sudo
+          # install because /usr/local/bin is not writable by the runner user on
+          # ubuntu-24. /releases/latest avoids pinning a version that may not exist.
+          curl -fsSL -o ./kind https://github.com/kubernetes-sigs/kind/releases/latest/download/kind-linux-amd64
+          sudo install -m 0755 ./kind /usr/local/bin/kind && rm -f ./kind
           kind version
 
       - name: Run kind smoke

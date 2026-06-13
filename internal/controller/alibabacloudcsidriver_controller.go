@@ -477,7 +477,10 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskNodeDaemonSet(ctx context.Co
 						{
 							Name:  "liveness-probe",
 							Image: livenessProbeImage,
-							Args:  []string{"--csi-address=/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"},
+							// --health-port distinct per driver: both node DaemonSets run with
+							// hostNetwork, so disk-node and nas-node liveness-probes would both
+							// bind the default :9808 on the host and one CrashLoops.
+							Args: []string{"--csi-address=/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock", "--health-port=9808"},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com"},
 							},
@@ -745,7 +748,9 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASNodeDaemonSet(ctx context.Con
 						{
 							Name:  "liveness-probe",
 							Image: livenessProbeImage,
-							Args:  []string{"--csi-address=/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock"},
+							// Distinct --health-port (9809) from csi-disk-node's 9808 — both are
+							// hostNetwork, so they would otherwise collide on :9808.
+							Args: []string{"--csi-address=/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock", "--health-port=9809"},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com"},
 							},

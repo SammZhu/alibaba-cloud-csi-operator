@@ -63,8 +63,8 @@ metadata:
     categories: Storage
     certified: "false"
     com.redhat.openshift.versions: v4.12-v4.18
-    containerImage: quay.io/samzhu/alibaba-cloud-csi-operator:v0.1.2
-    createdAt: "2026-06-13T10:46:24Z"
+    containerImage: quay.io/samzhu/alibaba-cloud-csi-operator:v0.1.3
+    createdAt: "2026-06-13T11:18:05Z"
     description: Installs and manages Alibaba Cloud CSI drivers (Disk/NAS/OSS) on
       OpenShift External Platform clusters using RAM Role instance principal authentication.
     features.operators.openshift.io/disconnected: "true"
@@ -78,7 +78,7 @@ metadata:
     operators.operatorframework.io/builder: operator-sdk-v1.42.2
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
     support: SammZhu
-  name: alibaba-cloud-csi-operator.v0.1.2
+  name: alibaba-cloud-csi-operator.v0.1.3
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -356,7 +356,7 @@ spec:
                 - --health-probe-bind-address=:8081
                 command:
                 - /manager
-                image: quay.io/samzhu/alibaba-cloud-csi-operator:v0.1.2
+                image: quay.io/samzhu/alibaba-cloud-csi-operator:v0.1.3
                 livenessProbe:
                   httpGet:
                     path: /healthz
@@ -456,4 +456,4 @@ spec:
   provider:
     name: SammZhu
     url: https://github.com/SammZhu
-  version: 0.1.2
+  version: 0.1.3

@@ -366,8 +366,8 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskControllerDeployment(ctx con
 			},
 		},
 		{
-			Name:         "csi-provisioner",
-			Image:        csiProvisionerImage,
+			Name:  "csi-provisioner",
+			Image: csiProvisionerImage,
 			// --leader-election: the controller runs 2 replicas, so without it BOTH
 			// provisioners service the same PVC and race on CreateDisk — Alibaba then
 			// rejects the duplicate with IdempotentProcessing and the PVC never binds.
@@ -666,8 +666,8 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASControllerDeployment(ctx cont
 			},
 		},
 		{
-			Name:         "csi-provisioner",
-			Image:        csiProvisionerImage,
+			Name:  "csi-provisioner",
+			Image: csiProvisionerImage,
 			// --leader-election: 2 controller replicas — see the disk provisioner note.
 			Args:         []string{"--csi-address=$(ADDRESS)", "--v=5", "--extra-create-metadata=true", "--leader-election=true"},
 			Env:          []corev1.EnvVar{{Name: "ADDRESS", Value: "/csi/csi.sock"}},

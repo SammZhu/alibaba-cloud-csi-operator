@@ -324,16 +324,24 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskControllerDeployment(ctx con
 
 	labels := map[string]string{"app": "csi-disk-controller"}
 
+	// Controller socket lives in an in-pod emptyDir (socket-dir, mounted at /csi),
+	// NOT the kubelet plugins hostPath — the controller does not register with
+	// kubelet, and the hostPath dir does not exist in the controller pod (binding
+	// the old path failed "no such file or directory"). The csi-plugin runs the
+	// controller service only (--run-node-service=false); the sidecars connect to
+	// the same /csi/csi.sock.
+	socketMount := corev1.VolumeMount{Name: "socket-dir", MountPath: "/csi"}
 	containers := []corev1.Container{
 		{
 			Name:  "csi-plugin",
 			Image: pluginImage,
-			Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=diskplugin.csi.alibabacloud.com"},
+			Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=diskplugin.csi.alibabacloud.com", "--run-node-service=false"},
 			Env: []corev1.EnvVar{
-				{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"},
+				{Name: "CSI_ENDPOINT", Value: "unix:///csi/csi.sock"},
 				{Name: "MAX_VOLUMES_PERNODE", Value: "15"},
 				{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
 			},
+			VolumeMounts: []corev1.VolumeMount{socketMount},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -346,28 +354,32 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskControllerDeployment(ctx con
 			},
 		},
 		{
-			Name:  "csi-provisioner",
-			Image: csiProvisionerImage,
-			Args:  []string{"--csi-address=$(ADDRESS)", "--v=5", "--feature-gates=Topology=True", "--extra-create-metadata=true"},
-			Env:   []corev1.EnvVar{{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"}},
+			Name:         "csi-provisioner",
+			Image:        csiProvisionerImage,
+			Args:         []string{"--csi-address=$(ADDRESS)", "--v=5", "--feature-gates=Topology=True", "--extra-create-metadata=true"},
+			Env:          []corev1.EnvVar{{Name: "ADDRESS", Value: "/csi/csi.sock"}},
+			VolumeMounts: []corev1.VolumeMount{socketMount},
 		},
 		{
-			Name:  "csi-attacher",
-			Image: csiAttacherImage,
-			Args:  []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
-			Env:   []corev1.EnvVar{{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"}},
+			Name:         "csi-attacher",
+			Image:        csiAttacherImage,
+			Args:         []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
+			Env:          []corev1.EnvVar{{Name: "ADDRESS", Value: "/csi/csi.sock"}},
+			VolumeMounts: []corev1.VolumeMount{socketMount},
 		},
 		{
-			Name:  "csi-resizer",
-			Image: csiResizerImage,
-			Args:  []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
-			Env:   []corev1.EnvVar{{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"}},
+			Name:         "csi-resizer",
+			Image:        csiResizerImage,
+			Args:         []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
+			Env:          []corev1.EnvVar{{Name: "ADDRESS", Value: "/csi/csi.sock"}},
+			VolumeMounts: []corev1.VolumeMount{socketMount},
 		},
 		{
-			Name:  "csi-snapshotter",
-			Image: csiSnapshotterImage,
-			Args:  []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
-			Env:   []corev1.EnvVar{{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"}},
+			Name:         "csi-snapshotter",
+			Image:        csiSnapshotterImage,
+			Args:         []string{"--v=5", "--csi-address=$(ADDRESS)", "--leader-election=true"},
+			Env:          []corev1.EnvVar{{Name: "ADDRESS", Value: "/csi/csi.sock"}},
+			VolumeMounts: []corev1.VolumeMount{socketMount},
 		},
 	}
 
@@ -426,13 +438,19 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskNodeDaemonSet(ctx context.Co
 						{
 							Name:  "csi-plugin",
 							Image: pluginImage,
-							Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=diskplugin.csi.alibabacloud.com"},
+							// Node-service only (the controller Deployment runs the controller
+							// service). SERVICE_PORT is distinct per driver because both node
+							// DaemonSets run with hostNetwork: without it disk-node and nas-node
+							// both bind the same host port (default 11270) and one CrashLoops
+							// "address already in use".
+							Args: []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=diskplugin.csi.alibabacloud.com", "--run-controller-service=false"},
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: &privileged,
 							},
 							Env: []corev1.EnvVar{
 								{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"},
 								{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
+								{Name: "SERVICE_PORT", Value: "11260"},
 								{Name: "KUBE_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
 							},
 							VolumeMounts: []corev1.VolumeMount{
@@ -605,16 +623,19 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASControllerDeployment(ctx cont
 	labels := map[string]string{"app": "csi-nas-controller"}
 
 	// NAS controller only needs provisioner — no attacher (attachRequired=false),
-	// no resizer (NAS capacity is flexible and serverless).
+	// no resizer (NAS capacity is flexible and serverless). Socket in an in-pod
+	// emptyDir (/csi), controller-service only — same fix as the disk controller.
+	socketMount := corev1.VolumeMount{Name: "socket-dir", MountPath: "/csi"}
 	containers := []corev1.Container{
 		{
 			Name:  "csi-plugin",
 			Image: pluginImage,
-			Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=nasplugin.csi.alibabacloud.com"},
+			Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=nasplugin.csi.alibabacloud.com", "--run-node-service=false"},
 			Env: []corev1.EnvVar{
-				{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock"},
+				{Name: "CSI_ENDPOINT", Value: "unix:///csi/csi.sock"},
 				{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
 			},
+			VolumeMounts: []corev1.VolumeMount{socketMount},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -627,10 +648,11 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASControllerDeployment(ctx cont
 			},
 		},
 		{
-			Name:  "csi-provisioner",
-			Image: csiProvisionerImage,
-			Args:  []string{"--csi-address=$(ADDRESS)", "--v=5", "--extra-create-metadata=true"},
-			Env:   []corev1.EnvVar{{Name: "ADDRESS", Value: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock"}},
+			Name:         "csi-provisioner",
+			Image:        csiProvisionerImage,
+			Args:         []string{"--csi-address=$(ADDRESS)", "--v=5", "--extra-create-metadata=true"},
+			Env:          []corev1.EnvVar{{Name: "ADDRESS", Value: "/csi/csi.sock"}},
+			VolumeMounts: []corev1.VolumeMount{socketMount},
 		},
 	}
 
@@ -688,13 +710,17 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASNodeDaemonSet(ctx context.Con
 						{
 							Name:  "csi-plugin",
 							Image: pluginImage,
-							Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=nasplugin.csi.alibabacloud.com"},
+							// Node-service only + distinct SERVICE_PORT (11261) so it does not
+							// collide with csi-disk-node (11260) on the host network. See the
+							// disk node DaemonSet for the rationale.
+							Args: []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=nasplugin.csi.alibabacloud.com", "--run-controller-service=false"},
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: &privileged,
 							},
 							Env: []corev1.EnvVar{
 								{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock"},
 								{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
+								{Name: "SERVICE_PORT", Value: "11261"},
 								{Name: "KUBE_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
 							},
 							VolumeMounts: []corev1.VolumeMount{

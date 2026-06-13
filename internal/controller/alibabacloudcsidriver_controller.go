@@ -90,6 +90,7 @@ type AlibabaCloudCSIDriverReconciler struct {
 // must be a SUPERSET of every PolicyRule it grants to the driver. The markers
 // below mirror that driver role; keep them in sync with it.
 // +kubebuilder:rbac:groups="",resources=nodes;namespaces;pods;persistentvolumes;persistentvolumeclaims,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=create;delete
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=csinodes;volumeattachments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=volumeattachments/status,verbs=patch
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots;volumesnapshotcontents,verbs=get;list;watch;create;update;patch;delete
@@ -196,6 +197,10 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureClusterRole(ctx context.Context)
 		ObjectMeta: metav1.ObjectMeta{Name: "alibaba-cloud-csi-role"},
 		Rules: []rbacv1.PolicyRule{
 			{APIGroups: []string{""}, Resources: []string{"nodes", "namespaces", "pods", "persistentvolumes", "persistentvolumeclaims"}, Verbs: []string{"get", "list", "watch", "update", "patch"}},
+			// external-provisioner creates/deletes the PV object after CreateVolume —
+			// without create/delete the disk is created but "Saving volume" is
+			// forbidden and the PVC never binds (observed 2026-06-14 in 13-csi-smoke).
+			{APIGroups: []string{""}, Resources: []string{"persistentvolumes"}, Verbs: []string{"create", "delete"}},
 			{APIGroups: []string{""}, Resources: []string{"events"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch"}},
 			{APIGroups: []string{"storage.k8s.io"}, Resources: []string{"storageclasses", "csinodes", "csidrivers", "volumeattachments"}, Verbs: []string{"get", "list", "watch", "update", "patch"}},
 			{APIGroups: []string{"storage.k8s.io"}, Resources: []string{"volumeattachments/status"}, Verbs: []string{"patch"}},

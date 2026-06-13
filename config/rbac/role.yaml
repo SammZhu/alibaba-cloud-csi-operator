@@ -21,7 +21,6 @@ rules:
   - namespaces
   - nodes
   - persistentvolumeclaims
-  - persistentvolumes
   - pods
   verbs:
   - get
@@ -32,6 +31,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - persistentvolumes
   - serviceaccounts
   verbs:
   - create

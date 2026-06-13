@@ -91,6 +91,7 @@ type AlibabaCloudCSIDriverReconciler struct {
 // below mirror that driver role; keep them in sync with it.
 // +kubebuilder:rbac:groups="",resources=nodes;namespaces;pods;persistentvolumes;persistentvolumeclaims,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=create;delete
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=csinodes;volumeattachments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=volumeattachments/status,verbs=patch
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots;volumesnapshotcontents,verbs=get;list;watch;create;update;patch;delete
@@ -205,6 +206,12 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureClusterRole(ctx context.Context)
 			{APIGroups: []string{"storage.k8s.io"}, Resources: []string{"storageclasses", "csinodes", "csidrivers", "volumeattachments"}, Verbs: []string{"get", "list", "watch", "update", "patch"}},
 			{APIGroups: []string{"storage.k8s.io"}, Resources: []string{"volumeattachments/status"}, Verbs: []string{"patch"}},
 			{APIGroups: []string{"snapshot.storage.k8s.io"}, Resources: []string{"volumesnapshots", "volumesnapshotcontents", "volumesnapshotclasses"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+			// Leader election: the provisioner/attacher/resizer/snapshotter run with
+			// --leader-election and hold a Lease. Without this the sidecars cannot
+			// acquire leadership ("cannot get resource leases"), so e.g. the attacher
+			// never attaches the disk and the Pod is stuck ContainerCreating
+			// (observed 2026-06-14 in 13-csi-smoke).
+			{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
 		},
 	}
 	return createOrIgnore(ctx, r.Client, cr)

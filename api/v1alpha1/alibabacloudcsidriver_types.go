@@ -239,6 +239,15 @@ type AlibabaCloudCSIDriverSpec struct {
 	// +kubebuilder:default="v1.35.3"
 	ImageTag string `json:"imageTag,omitempty"`
 
+	// ECSEndpoint overrides the Alibaba Cloud ECS API endpoint the driver calls
+	// (sets ECS_ENDPOINT on every csi-plugin container). On air-gapped / no-public-
+	// egress clusters the default public endpoint (ecs.<region>.aliyuncs.com) times
+	// out and node registration fails (NodeGetInfo -> DescribeDisks i/o timeout), so
+	// set this to the VPC-internal endpoint, e.g. ecs-vpc.<region>.aliyuncs.com.
+	// Empty = the driver's default public endpoint.
+	// +optional
+	ECSEndpoint string `json:"ecsEndpoint,omitempty"`
+
 	// Auth configures how the CSI driver authenticates to Alibaba Cloud APIs.
 	// +optional
 	Auth AuthSpec `json:"auth,omitempty"`

@@ -336,11 +336,11 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskControllerDeployment(ctx con
 			Name:  "csi-plugin",
 			Image: pluginImage,
 			Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=diskplugin.csi.alibabacloud.com", "--run-node-service=false"},
-			Env: []corev1.EnvVar{
+			Env: append([]corev1.EnvVar{
 				{Name: "CSI_ENDPOINT", Value: "unix:///csi/csi.sock"},
 				{Name: "MAX_VOLUMES_PERNODE", Value: "15"},
 				{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
-			},
+			}, ecsEndpointEnv(cr)...),
 			VolumeMounts: []corev1.VolumeMount{socketMount},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -447,12 +447,12 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskNodeDaemonSet(ctx context.Co
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: &privileged,
 							},
-							Env: []corev1.EnvVar{
+							Env: append([]corev1.EnvVar{
 								{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"},
 								{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
 								{Name: "SERVICE_PORT", Value: "11260"},
 								{Name: "KUBE_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
-							},
+							}, ecsEndpointEnv(cr)...),
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "kubelet-dir", MountPath: "/var/lib/kubelet", MountPropagation: mountPropagation(corev1.MountPropagationBidirectional)},
 								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com"},
@@ -631,10 +631,10 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASControllerDeployment(ctx cont
 			Name:  "csi-plugin",
 			Image: pluginImage,
 			Args:  []string{"--endpoint=$(CSI_ENDPOINT)", "--v=5", "--driver=nasplugin.csi.alibabacloud.com", "--run-node-service=false"},
-			Env: []corev1.EnvVar{
+			Env: append([]corev1.EnvVar{
 				{Name: "CSI_ENDPOINT", Value: "unix:///csi/csi.sock"},
 				{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
-			},
+			}, ecsEndpointEnv(cr)...),
 			VolumeMounts: []corev1.VolumeMount{socketMount},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -717,12 +717,12 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASNodeDaemonSet(ctx context.Con
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: &privileged,
 							},
-							Env: []corev1.EnvVar{
+							Env: append([]corev1.EnvVar{
 								{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock"},
 								{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
 								{Name: "SERVICE_PORT", Value: "11261"},
 								{Name: "KUBE_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
-							},
+							}, ecsEndpointEnv(cr)...),
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "kubelet-dir", MountPath: "/var/lib/kubelet", MountPropagation: mountPropagation(corev1.MountPropagationBidirectional)},
 								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com"},
@@ -1076,5 +1076,16 @@ func toCoreTolerations(in []csiv1alpha1.TolerationSpec) []corev1.Toleration {
 }
 
 func mountPropagation(m corev1.MountPropagationMode) *corev1.MountPropagationMode { return &m }
+
+// ecsEndpointEnv returns the ECS_ENDPOINT override (appended to every csi-plugin
+// container) when spec.ecsEndpoint is set — e.g. ecs-vpc.<region>.aliyuncs.com on
+// air-gapped clusters where the default public ECS endpoint is unreachable. Empty
+// spec returns nil so the driver keeps its default public endpoint.
+func ecsEndpointEnv(cr *csiv1alpha1.AlibabaCloudCSIDriver) []corev1.EnvVar {
+	if cr.Spec.ECSEndpoint == "" {
+		return nil
+	}
+	return []corev1.EnvVar{{Name: "ECS_ENDPOINT", Value: cr.Spec.ECSEndpoint}}
+}
 
 func storageClassBindingMode(m storagev1.VolumeBindingMode) *storagev1.VolumeBindingMode { return &m }

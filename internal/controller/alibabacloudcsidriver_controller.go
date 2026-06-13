@@ -80,10 +80,19 @@ type AlibabaCloudCSIDriverReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments;daemonsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotclasses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=storageprofiles,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=use,resourceNames={privileged}
+// The operator creates the driver ClusterRole "alibaba-cloud-csi-role" (see
+// reconcileRBAC). Kubernetes forbids an account from granting RBAC verbs it does
+// not itself hold (privilege-escalation prevention), so the operator's own role
+// must be a SUPERSET of every PolicyRule it grants to the driver. The markers
+// below mirror that driver role; keep them in sync with it.
+// +kubebuilder:rbac:groups="",resources=nodes;namespaces;pods;persistentvolumes;persistentvolumeclaims,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=csinodes;volumeattachments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=volumeattachments/status,verbs=patch
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots;volumesnapshotcontents,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AlibabaCloudCSIDriverReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)

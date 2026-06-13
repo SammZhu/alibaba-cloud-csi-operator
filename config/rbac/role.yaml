@@ -10,7 +10,25 @@ rules:
   - events
   verbs:
   - create
+  - get
+  - list
   - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - nodes
+  - persistentvolumeclaims
+  - persistentvolumes
+  - pods
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -97,6 +115,8 @@ rules:
   - snapshot.storage.k8s.io
   resources:
   - volumesnapshotclasses
+  - volumesnapshotcontents
+  - volumesnapshots
   verbs:
   - create
   - delete
@@ -118,3 +138,20 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - csinodes
+  - volumeattachments
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - volumeattachments/status
+  verbs:
+  - patch

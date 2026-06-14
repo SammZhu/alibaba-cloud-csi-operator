@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -90,6 +91,7 @@ type AlibabaCloudCSIDriverReconciler struct {
 // must be a SUPERSET of every PolicyRule it grants to the driver. The markers
 // below mirror that driver role; keep them in sync with it.
 // +kubebuilder:rbac:groups="",resources=nodes;namespaces;pods;persistentvolumes;persistentvolumeclaims,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=create;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=csinodes;volumeattachments,verbs=get;list;watch;update;patch
@@ -198,6 +200,11 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureClusterRole(ctx context.Context)
 		ObjectMeta: metav1.ObjectMeta{Name: "alibaba-cloud-csi-role"},
 		Rules: []rbacv1.PolicyRule{
 			{APIGroups: []string{""}, Resources: []string{"nodes", "namespaces", "pods", "persistentvolumes", "persistentvolumeclaims"}, Verbs: []string{"get", "list", "watch", "update", "patch"}},
+			// The node csi-plugin reads the optional kube-system/csi-plugin configmap at
+			// startup. Without get it logs `configmaps "csi-plugin" is forbidden` — the
+			// fast RBAC denial returns immediately, racing the plugin past credential
+			// warmup into an unsigned ECS DescribeDisks (observed 2026-06-14 on zone-c).
+			{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"get", "list", "watch"}},
 			// external-provisioner creates/deletes the PV object after CreateVolume —
 			// without create/delete the disk is created but "Saving volume" is
 			// forbidden and the PVC never binds (observed 2026-06-14 in 13-csi-smoke).
@@ -476,14 +483,24 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskNodeDaemonSet(ctx context.Co
 								{Name: "dev", MountPath: "/dev"},
 								{Name: "sys", MountPath: "/sys"},
 							},
+							// Restart the plugin (rebuilding its ECS client with warm
+							// credentials) until kubelet registration succeeds. 9810 = disk
+							// registrar --http-endpoint.
+							StartupProbe: registrarHealthzStartupProbe(9810),
 						},
 						{
 							Name:  "node-driver-registrar",
 							Image: nodeRegistrarImage,
+							// --http-endpoint exposes /healthz reporting kubelet-registration
+							// status; the csi-plugin container's startupProbe watches it (port
+							// 9810, distinct from nas 9811 — both DaemonSets are hostNetwork) so
+							// the PLUGIN restarts until registration succeeds. See
+							// registrarHealthzStartupProbe.
 							Args: []string{
 								"--v=5",
 								"--csi-address=/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock",
 								"--kubelet-registration-path=/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock",
+								"--http-endpoint=:9810",
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com"},
@@ -749,14 +766,20 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASNodeDaemonSet(ctx context.Con
 								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com"},
 								{Name: "registration-dir", MountPath: "/registration"},
 							},
+							// 9811 = nas registrar --http-endpoint; restart plugin until
+							// kubelet registration succeeds (see registrarHealthzStartupProbe).
+							StartupProbe: registrarHealthzStartupProbe(9811),
 						},
 						{
 							Name:  "node-driver-registrar",
 							Image: nodeRegistrarImage,
+							// --http-endpoint /healthz drives the csi-plugin startupProbe on
+							// :9811 (distinct from disk 9810 — both DaemonSets are hostNetwork).
 							Args: []string{
 								"--v=5",
 								"--csi-address=/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock",
 								"--kubelet-registration-path=/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com/csi.sock",
+								"--http-endpoint=:9811",
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com"},
@@ -1117,6 +1140,32 @@ func controllerPodAntiAffinity(appLabel string) *corev1.Affinity {
 				},
 			},
 		},
+	}
+}
+
+// registrarHealthzStartupProbe makes the node csi-plugin container restart itself
+// until the driver is actually registered with kubelet. node-driver-registrar's
+// --http-endpoint /healthz reports unhealthy until registration succeeds, and
+// registration only succeeds once NodeGetInfo (→ ECS DescribeDisks, a signed call)
+// works. On some nodes the csi-plugin builds its ECS client before the ecs_ram_role
+// credential provider has warmed up, caches a credential-less client, and issues an
+// unsigned DescribeDisks forever ("IllegalTimestamp: Timestamp not supplied") — only
+// node-driver-registrar restarts, against the same stuck plugin process, so it never
+// recovers. Probing the registrar's healthz from the PLUGIN container restarts the
+// plugin instead, which rebuilds the ECS client with now-warm credentials.
+// failureThreshold*periodSeconds (=60s) is the per-attempt grace before a restart.
+func registrarHealthzStartupProbe(port int32) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/healthz",
+				Port: intstr.FromInt32(port),
+				Host: "127.0.0.1",
+			},
+		},
+		InitialDelaySeconds: 10,
+		PeriodSeconds:       10,
+		FailureThreshold:    6,
 	}
 }
 

@@ -474,6 +474,23 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskNodeDaemonSet(ctx context.Co
 								{Name: "CSI_ENDPOINT", Value: "unix:///var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com/csi.sock"},
 								{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
 								{Name: "SERVICE_PORT", Value: "11260"},
+								// NodeGetInfo makes TWO ECS calls during plugin registration, each
+								// using the global ECS client built once at startup. When the
+								// ecs_ram_role provider hasn't warmed at that moment the client signs
+								// nothing → "IllegalTimestamp: Timestamp not supplied" → NodeGetInfo
+								// fails → node-driver-registrar never registers → CrashLoopBackOff
+								// (reproduced persistently on cn-wulanchabu-c, all infra factors ruled
+								// out live 2026-06-14). Both calls are independently gated, so set
+								// both envs to make NodeGetInfo issue ZERO ECS calls — registration
+								// then never depends on cloud credentials:
+								//   MAX_VOLUMES_PERNODE  → skips getVolumeCountFromOpenAPI (DescribeDisks);
+								//                          15 matches the controller's value.
+								//   DISK_ALLOW_ALL_TYPE  → skips GetAvailableDiskTypes
+								//                          (DescribeAvailableResource); the node then
+								//                          advertises all disk types instead of
+								//                          filtering by per-zone availability.
+								{Name: "MAX_VOLUMES_PERNODE", Value: "15"},
+								{Name: "DISK_ALLOW_ALL_TYPE", Value: "true"},
 								{Name: "KUBE_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
 							}, ecsEndpointEnv(cr)...),
 							VolumeMounts: []corev1.VolumeMount{

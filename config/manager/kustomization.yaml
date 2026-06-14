@@ -7,4 +7,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: quay.io/samzhu/alibaba-cloud-csi-operator
-  newTag: v0.1.5
+  newTag: v0.1.6

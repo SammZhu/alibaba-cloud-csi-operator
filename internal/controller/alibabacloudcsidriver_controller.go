@@ -97,6 +97,7 @@ type AlibabaCloudCSIDriverReconciler struct {
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=csinodes;volumeattachments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=volumeattachments/status,verbs=patch
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots;volumesnapshotcontents,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotcontents/status;volumesnapshots/status,verbs=get;update;patch
 
 func (r *AlibabaCloudCSIDriverReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -213,6 +214,12 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureClusterRole(ctx context.Context)
 			{APIGroups: []string{"storage.k8s.io"}, Resources: []string{"storageclasses", "csinodes", "csidrivers", "volumeattachments"}, Verbs: []string{"get", "list", "watch", "update", "patch"}},
 			{APIGroups: []string{"storage.k8s.io"}, Resources: []string{"volumeattachments/status"}, Verbs: []string{"patch"}},
 			{APIGroups: []string{"snapshot.storage.k8s.io"}, Resources: []string{"volumesnapshots", "volumesnapshotcontents", "volumesnapshotclasses"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+			// The csi-snapshotter sidecar updates VolumeSnapshotContent.status
+			// (readyToUse / snapshotHandle) after the driver's CreateSnapshot. Without
+			// this subresource the content status is never written, the VolumeSnapshot
+			// stays readyToUse=false forever and the restore never happens (observed:
+			// 13-csi-smoke [snapshot] FAIL, 2026-06-14).
+			{APIGroups: []string{"snapshot.storage.k8s.io"}, Resources: []string{"volumesnapshotcontents/status", "volumesnapshots/status"}, Verbs: []string{"get", "update", "patch"}},
 			// Leader election: the provisioner/attacher/resizer/snapshotter run with
 			// --leader-election and hold a Lease. Without this the sidecars cannot
 			// acquire leadership ("cannot get resource leases"), so e.g. the attacher

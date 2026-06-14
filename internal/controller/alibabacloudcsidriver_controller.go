@@ -412,6 +412,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskControllerDeployment(ctx con
 					ServiceAccountName: serviceAccountName,
 					NodeSelector:       nodeSelector,
 					Tolerations:        tolerations,
+					Affinity:           controllerPodAntiAffinity(labels["app"]),
 					Containers:         containers,
 					Volumes: []corev1.Volume{
 						{Name: "socket-dir", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
@@ -689,6 +690,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASControllerDeployment(ctx cont
 					ServiceAccountName: serviceAccountName,
 					NodeSelector:       nodeSelector,
 					Tolerations:        tolerations,
+					Affinity:           controllerPodAntiAffinity(labels["app"]),
 					Containers:         containers,
 					Volumes: []corev1.Volume{
 						{Name: "socket-dir", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
@@ -1094,6 +1096,28 @@ func toCoreTolerations(in []csiv1alpha1.TolerationSpec) []corev1.Toleration {
 		})
 	}
 	return out
+}
+
+// controllerPodAntiAffinity spreads the controller's replicas across distinct
+// nodes (hostnames) using a SOFT (preferred) rule. The controller runs 2 replicas
+// pinned to control-plane nodes via NodeSelector. On a single-master cluster a hard
+// rule would leave the second replica Pending forever, so this is preferred-only:
+// with one master both replicas co-locate (acceptable), with multiple masters the
+// scheduler places the second replica on a different master for real HA.
+func controllerPodAntiAffinity(appLabel string) *corev1.Affinity {
+	return &corev1.Affinity{
+		PodAntiAffinity: &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+				{
+					Weight: 100,
+					PodAffinityTerm: corev1.PodAffinityTerm{
+						TopologyKey:   "kubernetes.io/hostname",
+						LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": appLabel}},
+					},
+				},
+			},
+		},
+	}
 }
 
 func mountPropagation(m corev1.MountPropagationMode) *corev1.MountPropagationMode { return &m }

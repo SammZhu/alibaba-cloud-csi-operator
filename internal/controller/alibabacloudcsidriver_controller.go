@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -43,18 +44,34 @@ import (
 )
 
 const (
-	diskDriverName      = "diskplugin.csi.alibabacloud.com"
-	nasDriverName       = "nasplugin.csi.alibabacloud.com"
-	ossDriverName       = "ossplugin.csi.alibabacloud.com"
-	serviceAccountName  = "alibaba-cloud-csi-sa"
-	operatorNamespace   = "kube-system"
-	csiImage            = "registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin"
-	csiProvisionerImage = "registry.cn-hangzhou.aliyuncs.com/acs/csi-provisioner:v3.5.0"
-	csiAttacherImage    = "registry.cn-hangzhou.aliyuncs.com/acs/csi-attacher:v4.3.0"
-	csiResizerImage     = "registry.cn-hangzhou.aliyuncs.com/acs/csi-resizer:v1.8.0"
-	csiSnapshotterImage = "registry.cn-hangzhou.aliyuncs.com/acs/csi-snapshotter:v6.3.0"
-	nodeRegistrarImage  = "registry.cn-hangzhou.aliyuncs.com/acs/csi-node-driver-registrar:v2.8.0"
-	livenessProbeImage  = "registry.cn-hangzhou.aliyuncs.com/acs/livenessprobe:v2.10.0"
+	diskDriverName     = "diskplugin.csi.alibabacloud.com"
+	nasDriverName      = "nasplugin.csi.alibabacloud.com"
+	ossDriverName      = "ossplugin.csi.alibabacloud.com"
+	serviceAccountName = "alibaba-cloud-csi-sa"
+	operatorNamespace  = "kube-system"
+	csiImage           = "registry.cn-hangzhou.aliyuncs.com/acs/csi-plugin"
+
+	// External CSI sidecars default to the canonical, publicly-resolvable upstream
+	// registry.k8s.io/sig-storage images, **digest-pinned** (disconnected best
+	// practice + works on vanilla Kubernetes / operatorhub.io out of the box). The
+	// Alibaba ACR (acs/) only carries some of these under bare tags, so referencing
+	// acs/ directly breaks a direct (non-mirror) pull. Each can be overridden at
+	// deploy time via a RELATED_IMAGE_* env var (see imageFor) — the air-gap path
+	// points them at the mirror that way without changing these defaults.
+	// Digests resolved 2026-06-23 (registry.k8s.io/sig-storage):
+	defaultProvisionerImage = "registry.k8s.io/sig-storage/csi-provisioner@sha256:d078dc174323407e8cc6f0f9abd4efaac5db27838f1564d0253d5e3233e3f17f"           // v3.5.0
+	defaultAttacherImage    = "registry.k8s.io/sig-storage/csi-attacher@sha256:4eb73137b66381b7b5dfd4d21d460f4b4095347ab6ed4626e0199c29d8d021af"              // v4.3.0
+	defaultResizerImage     = "registry.k8s.io/sig-storage/csi-resizer@sha256:2e2b44393539d744a55b9370b346e8ebd95a77573064f3f9a8caf18c22f4d0d0"               // v1.8.0
+	defaultSnapshotterImage = "registry.k8s.io/sig-storage/csi-snapshotter@sha256:93fbf54dd67f586428ea339743160e1a5110c058afde3c2e824f11fbc6efae53"           // v6.3.0
+	defaultRegistrarImage   = "registry.k8s.io/sig-storage/csi-node-driver-registrar@sha256:f6717ce72a2615c7fbc746b4068f788e78579c54c43b8716e5ce650d97af2df1" // v2.8.0
+	defaultLivenessImage    = "registry.k8s.io/sig-storage/livenessprobe@sha256:4dc0b87ccd69f9865b89234d8555d3a614ab0a16ed94a3016ffd27f8106132ce"             // v2.10.0
+
+	envProvisioner = "RELATED_IMAGE_CSI_PROVISIONER"
+	envAttacher    = "RELATED_IMAGE_CSI_ATTACHER"
+	envResizer     = "RELATED_IMAGE_CSI_RESIZER"
+	envSnapshotter = "RELATED_IMAGE_CSI_SNAPSHOTTER"
+	envRegistrar   = "RELATED_IMAGE_CSI_NODE_DRIVER_REGISTRAR"
+	envLiveness    = "RELATED_IMAGE_LIVENESSPROBE"
 
 	fieldManager = "alibaba-cloud-csi-operator"
 
@@ -65,6 +82,28 @@ const (
 	// only CREATE_DELETE_VOLUME and EXPAND_VOLUME. A VolumeSnapshotClass for NAS
 	// would therefore be a footgun (every VolumeSnapshot would fail at the driver).
 	// NAS-backed volumes are protected via OADP file-system backup (kopia) to OSS.
+)
+
+// imageFor returns the RELATED_IMAGE_* env override if set, else the default.
+// This is the OLM convention for operand images: the CSV sets RELATED_IMAGE_*
+// env on the operator Deployment (and lists them in spec.relatedImages), and a
+// disconnected/air-gap deploy points them at a mirror without code changes.
+func imageFor(env, def string) string {
+	if v := os.Getenv(env); v != "" {
+		return v
+	}
+	return def
+}
+
+// Resolved sidecar images (env override → default). Read once at init; the
+// RELATED_IMAGE_* env on the operator pod is fixed for its lifetime.
+var (
+	csiProvisionerImage = imageFor(envProvisioner, defaultProvisionerImage)
+	csiAttacherImage    = imageFor(envAttacher, defaultAttacherImage)
+	csiResizerImage     = imageFor(envResizer, defaultResizerImage)
+	csiSnapshotterImage = imageFor(envSnapshotter, defaultSnapshotterImage)
+	nodeRegistrarImage  = imageFor(envRegistrar, defaultRegistrarImage)
+	livenessProbeImage  = imageFor(envLiveness, defaultLivenessImage)
 )
 
 // AlibabaCloudCSIDriverReconciler reconciles a AlibabaCloudCSIDriver object

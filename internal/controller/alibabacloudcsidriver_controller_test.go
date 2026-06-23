@@ -880,3 +880,15 @@ func TestEnsurePrivilegedNamespacePSA(t *testing.T) {
 		t.Fatalf("second (idempotent) call: %v", err)
 	}
 }
+
+func TestImageFor(t *testing.T) {
+	// unset → default
+	if got := imageFor("RELATED_IMAGE_DEFINITELY_UNSET_XYZ", "default-img"); got != "default-img" {
+		t.Errorf("imageFor (unset) = %q; want default-img", got)
+	}
+	// set → override (the air-gap deploy points operand images at the mirror this way)
+	t.Setenv("RELATED_IMAGE_OVERRIDE_TEST", "mirror.example/x@sha256:abc")
+	if got := imageFor("RELATED_IMAGE_OVERRIDE_TEST", "default-img"); got != "mirror.example/x@sha256:abc" {
+		t.Errorf("imageFor (set) = %q; want the override", got)
+	}
+}

@@ -77,6 +77,23 @@ spec:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
+        # Operand (CSI sidecar) images. operator-sdk derives spec.relatedImages
+        # from these RELATED_IMAGE_* env vars; the controller reads them (imageFor)
+        # so an air-gap deploy can point them at a mirror without rebuilding.
+        # Digest-pinned upstream registry.k8s.io/sig-storage (publicly resolvable).
+        env:
+        - name: RELATED_IMAGE_CSI_PROVISIONER
+          value: registry.k8s.io/sig-storage/csi-provisioner@sha256:d078dc174323407e8cc6f0f9abd4efaac5db27838f1564d0253d5e3233e3f17f
+        - name: RELATED_IMAGE_CSI_ATTACHER
+          value: registry.k8s.io/sig-storage/csi-attacher@sha256:4eb73137b66381b7b5dfd4d21d460f4b4095347ab6ed4626e0199c29d8d021af
+        - name: RELATED_IMAGE_CSI_RESIZER
+          value: registry.k8s.io/sig-storage/csi-resizer@sha256:2e2b44393539d744a55b9370b346e8ebd95a77573064f3f9a8caf18c22f4d0d0
+        - name: RELATED_IMAGE_CSI_SNAPSHOTTER
+          value: registry.k8s.io/sig-storage/csi-snapshotter@sha256:93fbf54dd67f586428ea339743160e1a5110c058afde3c2e824f11fbc6efae53
+        - name: RELATED_IMAGE_CSI_NODE_DRIVER_REGISTRAR
+          value: registry.k8s.io/sig-storage/csi-node-driver-registrar@sha256:f6717ce72a2615c7fbc746b4068f788e78579c54c43b8716e5ce650d97af2df1
+        - name: RELATED_IMAGE_LIVENESSPROBE
+          value: registry.k8s.io/sig-storage/livenessprobe@sha256:4dc0b87ccd69f9865b89234d8555d3a614ab0a16ed94a3016ffd27f8106132ce
         ports: []
         securityContext:
           allowPrivilegeEscalation: false

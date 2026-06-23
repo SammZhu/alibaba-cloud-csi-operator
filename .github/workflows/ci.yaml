@@ -183,6 +183,10 @@ jobs:
             -t ${{ steps.tags.outputs.primary }} \
             -t ${{ steps.tags.outputs.image_latest }} \
             -f Dockerfile .
+          # Save the just-built image as a tarball so Trivy can scan it locally on
+          # PRs too (PRs do not push to the registry — scanning by remote ref would
+          # fail with MANIFEST_UNKNOWN).
+          podman save -o /tmp/operator-image.tar ${{ steps.tags.outputs.primary }}
 
       # Push BEFORE preflight: preflight pulls the image manifest directly
       # from the registry, NOT from local podman storage, so the image must
@@ -236,7 +240,9 @@ jobs:
       - name: Trivy CVE scan (operator image)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ steps.tags.outputs.primary }}
+          # Scan the locally-built image tarball (works on PRs, where the image is
+          # not pushed to the registry).
+          input: /tmp/operator-image.tar
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL

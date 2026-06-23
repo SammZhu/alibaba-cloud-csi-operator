@@ -183,7 +183,15 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureRBAC(ctx context.Context, cr *cs
 	if err := r.ensureClusterRoleBinding(ctx); err != nil {
 		return err
 	}
-	return r.ensureSCCBinding(ctx)
+	// Privileged-pod admission for the node DaemonSet is platform-specific:
+	// OpenShift uses SecurityContextConstraints; vanilla Kubernetes uses Pod
+	// Security Admission. Detect which API the cluster serves and adapt.
+	if r.sccAvailable() {
+		logf.FromContext(ctx).Info("admission backend: OpenShift SCC (privileged)")
+		return r.ensureSCCBinding(ctx)
+	}
+	logf.FromContext(ctx).Info("admission backend: Pod Security Admission (no SCC API found)")
+	return r.ensurePrivilegedNamespacePSA(ctx)
 }
 
 func (r *AlibabaCloudCSIDriverReconciler) ensureServiceAccount(ctx context.Context) error {
@@ -253,6 +261,50 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureSCCBinding(ctx context.Context) 
 		Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: serviceAccountName, Namespace: operatorNamespace}},
 	}
 	return createOrIgnore(ctx, r.Client, crb)
+}
+
+// sccAvailable reports whether the cluster serves the OpenShift
+// SecurityContextConstraints API (i.e. we are on OpenShift). On OpenShift the
+// privileged node DaemonSet is admitted via the privileged SCC; elsewhere we
+// fall back to Pod Security Admission (a privileged namespace label).
+func (r *AlibabaCloudCSIDriverReconciler) sccAvailable() bool {
+	gk := schema.GroupKind{Group: "security.openshift.io", Kind: "SecurityContextConstraints"}
+	_, err := r.RESTMapper().RESTMapping(gk)
+	return err == nil
+}
+
+// ensurePrivilegedNamespacePSA labels the operator namespace so Pod Security
+// Admission admits the privileged CSI node DaemonSet on non-OpenShift clusters
+// (where there is no SCC). Idempotent; only writes when a label is missing/wrong.
+func (r *AlibabaCloudCSIDriverReconciler) ensurePrivilegedNamespacePSA(ctx context.Context) error {
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: operatorNamespace}, ns); err != nil {
+		if apierrors.IsNotFound(err) {
+			// kube-system is a cluster invariant; if it is somehow absent there is
+			// nothing to label (the CSI pods deploy into it and would fail anyway).
+			return nil
+		}
+		return fmt.Errorf("get namespace %s: %w", operatorNamespace, err)
+	}
+	want := map[string]string{
+		"pod-security.kubernetes.io/enforce": "privileged",
+		"pod-security.kubernetes.io/audit":   "privileged",
+		"pod-security.kubernetes.io/warn":    "privileged",
+	}
+	if ns.Labels == nil {
+		ns.Labels = map[string]string{}
+	}
+	changed := false
+	for k, v := range want {
+		if ns.Labels[k] != v {
+			ns.Labels[k] = v
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return r.Update(ctx, ns)
 }
 
 // ── Disk Driver ──────────────────────────────────────────────────────────────────

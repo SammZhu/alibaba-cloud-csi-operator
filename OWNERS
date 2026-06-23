@@ -1,0 +1,8 @@
+# Maintainer of this (unofficial, community) project: Sam Choo (@SammZhu)
+#
+# Independent repository — not part of the kubernetes / kubernetes-sigs orgs —
+# so these entries are informational (no prow automation).
+approvers:
+  - SammZhu
+reviewers:
+  - SammZhu

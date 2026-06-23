@@ -107,7 +107,7 @@ spec:
     - **NAS file storage** — shared file storage, ReadWriteMany (Phase 2)
     - **OSS object storage** — object-mount storage (Phase 3)
     - **RAM Role authentication** — uses ECS instance metadata (IMDSv2), no AK/SK required
-    - **OpenShift SCC** — automatically creates privileged SCC binding for the CSI node DaemonSet
+    - **Privileged admission (platform-adaptive)** — on OpenShift, binds the privileged SCC to the CSI node DaemonSet's ServiceAccount; on vanilla Kubernetes (no SCC API), labels the operator namespace for privileged Pod Security Admission instead
     - **StorageClass management** — creates and annotates default StorageClasses
 
     ## Prerequisites

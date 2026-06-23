@@ -25,8 +25,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -82,6 +84,17 @@ func defaultCR() *csiv1alpha1.AlibabaCloudCSIDriver {
 	}
 }
 
+// openshiftRESTMapper returns a RESTMapper that serves the OpenShift SCC API,
+// so sccAvailable() reports true (simulates running on OpenShift). The default
+// group-version lets RESTMapping(gk) resolve without an explicit version, like a
+// real cluster's discovery mapper.
+func openshiftRESTMapper() meta.RESTMapper {
+	sccGV := schema.GroupVersion{Group: "security.openshift.io", Version: "v1"}
+	m := meta.NewDefaultRESTMapper([]schema.GroupVersion{sccGV})
+	m.Add(sccGV.WithKind("SecurityContextConstraints"), meta.RESTScopeRoot)
+	return m
+}
+
 // ── Reconcile: CR not found ──────────────────────────────────────────────────────
 
 func TestReconcile_CRNotFound(t *testing.T) {
@@ -134,10 +147,12 @@ func TestReconcile_DiskEnabled_CreatesRBAC(t *testing.T) {
 	scheme := newScheme(t)
 	cr := defaultCR()
 
+	// Simulate OpenShift so the SCC-binding branch runs.
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(cr).
 		WithStatusSubresource(cr).
+		WithRESTMapper(openshiftRESTMapper()).
 		Build()
 	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
 
@@ -160,7 +175,7 @@ func TestReconcile_DiskEnabled_CreatesRBAC(t *testing.T) {
 		t.Errorf("ClusterRole not created: %v", err)
 	}
 
-	// SCC privileged ClusterRoleBinding should exist.
+	// SCC privileged ClusterRoleBinding should exist (OpenShift path).
 	crb := &rbacv1.ClusterRoleBinding{}
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "alibabacloud-csi-privileged"}, crb); err != nil {
 		t.Errorf("SCC ClusterRoleBinding not created: %v", err)
@@ -814,5 +829,54 @@ func TestNASStorageClassParameters_SubpathMode(t *testing.T) {
 	_, missing2 := nasStorageClassParameters(csiv1alpha1.NASStorageClassSpec{Name: "n", VolumeAs: "subpath"})
 	if len(missing2) != 1 || missing2[0] != "server" {
 		t.Errorf("subpath without server should report [server] missing, got %v", missing2)
+	}
+}
+
+// ── Platform-adaptive privileged admission (SCC vs PSA) ──────────────────────────
+
+func TestSCCAvailable(t *testing.T) {
+	scheme := newScheme(t)
+
+	// vanilla Kubernetes: RESTMapper has no SCC API → false
+	vanilla := fake.NewClientBuilder().WithScheme(scheme).
+		WithRESTMapper(meta.NewDefaultRESTMapper(nil)).Build()
+	rv := &AlibabaCloudCSIDriverReconciler{Client: vanilla, Scheme: scheme}
+	if rv.sccAvailable() {
+		t.Error("sccAvailable() = true without the SCC API; want false (PSA fallback)")
+	}
+
+	// OpenShift: RESTMapper knows SecurityContextConstraints → true
+	ocp := fake.NewClientBuilder().WithScheme(scheme).WithRESTMapper(openshiftRESTMapper()).Build()
+	ro := &AlibabaCloudCSIDriverReconciler{Client: ocp, Scheme: scheme}
+	if !ro.sccAvailable() {
+		t.Error("sccAvailable() = false with the SCC API present; want true (SCC binding)")
+	}
+}
+
+func TestEnsurePrivilegedNamespacePSA(t *testing.T) {
+	scheme := newScheme(t)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: operatorNamespace}}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	if err := r.ensurePrivilegedNamespacePSA(context.Background()); err != nil {
+		t.Fatalf("ensurePrivilegedNamespacePSA: %v", err)
+	}
+	got := &corev1.Namespace{}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: operatorNamespace}, got); err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+	for _, k := range []string{
+		"pod-security.kubernetes.io/enforce",
+		"pod-security.kubernetes.io/audit",
+		"pod-security.kubernetes.io/warn",
+	} {
+		if got.Labels[k] != "privileged" {
+			t.Errorf("label %s = %q; want privileged", k, got.Labels[k])
+		}
+	}
+	// idempotent: a second call must not error
+	if err := r.ensurePrivilegedNamespacePSA(context.Background()); err != nil {
+		t.Fatalf("second (idempotent) call: %v", err)
 	}
 }

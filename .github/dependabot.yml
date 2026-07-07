@@ -10,6 +10,15 @@ updates:
     groups:
       go-dependencies:
         patterns: ["*"]
+    ignore:
+      # The Kubernetes ecosystem (controller-runtime + k8s.io/*) must move in
+      # lockstep — a lone controller-runtime major/minor bump breaks the build
+      # (it needs a matching client-go). Bump these deliberately, not per-dep.
+      # Patch updates and security updates still flow.
+      - dependency-name: "sigs.k8s.io/controller-runtime"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "k8s.io/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   # Keep GitHub Actions pinned versions current.
   - package-ecosystem: github-actions
     directory: "/"

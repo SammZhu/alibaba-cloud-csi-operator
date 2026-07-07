@@ -123,6 +123,12 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 test-kind-smoke: manifests generate ## Run the operator out-of-cluster against a throwaway kind cluster and assert it reconciles all objects + status (hermetic, no Alibaba cloud).
 	./hack/kind-smoke.sh
 
+# Friendly alias for first-time users: the SAME hermetic kind run as
+# test-kind-smoke, framed as a "watch it reconcile in ~5 min, no cloud" demo.
+# See docs/QUICKSTART.md. KEEP_CLUSTER=1 ./hack/kind-smoke.sh to poke at it.
+.PHONY: demo
+demo: test-kind-smoke ## 5-minute hermetic demo: run the operator against kind and watch it reconcile a CSI driver (no Alibaba account)
+
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:

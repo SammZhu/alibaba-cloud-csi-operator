@@ -43,6 +43,13 @@ jobs:
       - name: go test (unit only, no envtest)
         run: go test -v -count=1 -timeout=120s $(go list ./... | grep -v /e2e)
 
+      - name: govulncheck (Go vulnerability scan)
+        # Fails on vulnerabilities reachable from this module's code, including the
+        # Go standard library (build toolchain). Complements the image Trivy scan.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
   kind-smoke:
     name: kind smoke (operator reconcile)
     runs-on: ubuntu-latest

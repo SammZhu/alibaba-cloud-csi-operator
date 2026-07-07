@@ -3,6 +3,13 @@
 OLM Operator that installs and manages [Alibaba Cloud CSI Driver](https://github.com/kubernetes-sigs/alibaba-cloud-csi-driver)
 on OpenShift clusters running in **External Platform** mode.
 
+> [!TIP]
+> **New here? Run `make demo`.** It runs the operator against a throwaway local
+> [kind](https://kind.sigs.k8s.io/) cluster and watches it reconcile a full CSI
+> driver in ~5 minutes — **no Alibaba account, no storage spend**. Then read
+> **[docs/QUICKSTART.md](docs/QUICKSTART.md)** for real-cluster (OLM) use and to
+> figure out [which project you need](docs/QUICKSTART.md#3-which-project-do-i-need).
+
 ## Overview
 
 When OpenShift runs in External Platform mode, no cloud-provider CSI driver is installed automatically.

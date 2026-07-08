@@ -5,6 +5,21 @@ maintained** — it does not round-trip through `make bundle` (that reflows the
 whole file and rewrites `createdAt`), so we bump versions by hand and re-pin the
 operator image digest with a helper, rather than regenerating.
 
+Prerequisites: `podman login quay.io` (push rights), `operator-sdk v1.42.2`,
+Go 1.26+.
+
+## 0. Pre-flight (after code changes)
+
+```sh
+make manifests generate   # ONLY if you changed API types (api/*_types.go)
+make fmt vet test         # unit tests (fake client, no cluster needed)
+```
+
+> If you changed **API types**, `make manifests` updates `config/crd/`. Also copy
+> the regenerated CRDs into `bundle/manifests/` and commit both — CI's *Validate
+> generated manifests* job fails on `config/crd` drift. Controller-logic-only
+> changes can skip this step.
+
 ## 1. Bump the version (four spots)
 
 Replace the old version with the new one in:
@@ -15,6 +30,10 @@ Replace the old version with the new one in:
 | `config/manager/kustomization.yaml` | `newTag: v0.1.8` |
 | `bundle/manifests/…clusterserviceversion.yaml` | `name: alibaba-cloud-csi-operator.v0.1.8` |
 | `bundle/manifests/…clusterserviceversion.yaml` | `version: 0.1.8` (and add `replaces: alibaba-cloud-csi-operator.v0.1.7`) |
+
+Also roll `CHANGELOG.md`: rename the `[Unreleased]` heading to `[v0.1.8]` and add a
+fresh empty `[Unreleased]` above it. Optionally refresh the CSV `createdAt`
+timestamp to the release date.
 
 > The deploy repo's `ansible/vars/images.yml` `csi_operator_image_tag` is bumped
 > **automatically** by the `sync-deploy-tag` CI job on the tag push — don't edit it
@@ -47,27 +66,38 @@ sidecars are already digest-pinned and are left untouched. Idempotent, and it ru
 ## 4. Commit, tag, push
 
 ```sh
-git add Makefile config/manager/kustomization.yaml bundle/
+git add Makefile config/manager/kustomization.yaml bundle/ CHANGELOG.md
 git commit -m "release: v0.1.8"
 git tag v0.1.8
 git push origin main --tags
 ```
 
 On the `v*` tag, CI:
-- pushes the operator image (again — idempotent),
-- builds + pushes the `-bundle` and `-catalog` images (the air-gap / CatalogSource
-  artifacts),
+- asserts `tag == v$(VERSION)` — fails loudly if you didn't bump all four spots;
+- **guards** that the committed bundle references this release's operator image by
+  digest — fails if you skipped step 3 (`make bundle-pin-operator`);
+- builds + pushes the `-bundle` and `-catalog` images **from the committed bundle
+  dir** (the SSOT — no regeneration), for the air-gap / CatalogSource path;
 - runs `sync-deploy-tag` to bump `csi_operator_image_tag` in the deploy repo.
 
-The **committed `bundle/`** you just pushed is the single source of truth for the
+Both guards **fail loudly** — a half-done release never ships silently.
+
+## 5. Verify
+
+```sh
+# CI green (esp. the release job's guard + `Validate OLM bundle`), then:
+git show HEAD:bundle/manifests/*.clusterserviceversion.yaml | grep containerImage
+#   -> quay.io/samzhu/alibaba-cloud-csi-operator@sha256:<new digest>
+```
+
+The **committed `bundle/`** is the single source of truth for the
 community-operators submission (fully digest-pinned) and for `Validate OLM bundle`
 in CI. See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the install paths.
 
 ## Why the bundle isn't regenerated in CI
 
-The CI catalog-build path historically ran `make bundle` (regenerate) before
-building the bundle image. That reflows the CSV and, with `--use-image-digests`,
-merges `relatedImages` into duplicate entries. Since the committed bundle is the
-SSOT, prefer building the image **from the committed dir** — i.e. `make
-bundle-build bundle-push` without a preceding `make bundle`. (Optional cleanup;
-requires a workflow edit.)
+The CI catalog-build path builds the bundle image **from the committed dir**
+(`make bundle-build bundle-push`), not by regenerating with `make bundle`.
+Regenerating reflows the CSV and, with `--use-image-digests`, merges
+`relatedImages` into duplicate entries — so the committed bundle is the SSOT, kept
+digest-pinned by step 3.

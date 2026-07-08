@@ -158,24 +158,34 @@ kubectl apply -f 04-csi-driver-cr.yaml
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.26+
 - operator-sdk v1.42.2
 - Docker / Podman
 
+> **Cutting a release?** Follow **[RELEASE.md](RELEASE.md)** — it covers the
+> version bump and digest-pinning the bundle (`make bundle-pin-operator`). The
+> snippets below are for ad-hoc / dev image builds.
+
 ### Three-layer image build
 
+Images are tagged with the **operator's own semver** (`v0.1.x`) — which is
+independent of the bundled upstream CSI **driver** version (`v1.35.3`, set via
+the CR's `imageTag`). Don't confuse the two:
+
 ```bash
+VER=v0.1.7   # the operator's version (Makefile VERSION), NOT the driver's v1.35.3
+
 # 1. Operator image
-make docker-build docker-push IMG=quay.io/samzhu/alibaba-cloud-csi-operator:v1.35.3
+make docker-build docker-push IMG=quay.io/samzhu/alibaba-cloud-csi-operator:$VER
 
 # 2. Bundle image (OLM metadata + CSV)
 make bundle-build bundle-push \
-  BUNDLE_IMG=quay.io/samzhu/alibaba-cloud-csi-operator-bundle:v1.35.3
+  BUNDLE_IMG=quay.io/samzhu/alibaba-cloud-csi-operator-bundle:$VER
 
 # 3. Catalog image
 make catalog-build catalog-push \
   CATALOG_IMG=quay.io/samzhu/alibaba-cloud-csi-operator-catalog:latest \
-  BUNDLE_IMGS=quay.io/samzhu/alibaba-cloud-csi-operator-bundle:v1.35.3
+  BUNDLE_IMGS=quay.io/samzhu/alibaba-cloud-csi-operator-bundle:$VER
 ```
 
 ### Local development

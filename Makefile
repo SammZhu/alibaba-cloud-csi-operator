@@ -337,6 +337,23 @@ bundle-build: ## Build the bundle image.
 bundle-push: ## Push the bundle image.
 	$(MAKE) docker-push IMG=$(BUNDLE_IMG)
 
+# Release helper: the committed bundle CSV is hand-maintained (it does NOT
+# round-trip through `make bundle` — that reflows the whole file + rewrites
+# createdAt). So at release we do NOT regenerate; we only re-pin the operator's
+# OWN image to the pushed image's digest (containerImage annotation + manager
+# Deployment image + relatedImages `manager`). The 6 sig-storage sidecars are
+# already digest-pinned and untouched. Run AFTER `make docker-build docker-push`
+# so $(IMG) exists in the registry. Idempotent.
+.PHONY: bundle-pin-operator
+bundle-pin-operator: operator-sdk ## Re-pin the operator's own image by digest in the committed bundle CSV (resolves $(IMG)).
+	@echo ">> resolving digest for $(IMG)"
+	@$(CONTAINER_TOOL) pull -q $(IMG) >/dev/null
+	@DIGEST=$$($(CONTAINER_TOOL) image inspect $(IMG) --format '{{index .RepoDigests 0}}' | sed 's/.*@//'); \
+	  echo ">> $(IMG) -> $$DIGEST"; \
+	  python3 hack/pin-operator-digest.py bundle/manifests/*.clusterserviceversion.yaml \
+	    --repo $(IMAGE_TAG_BASE) --digest $$DIGEST
+	$(OPERATOR_SDK) bundle validate ./bundle
+
 .PHONY: opm
 OPM = $(LOCALBIN)/opm
 opm: ## Download opm locally if necessary.

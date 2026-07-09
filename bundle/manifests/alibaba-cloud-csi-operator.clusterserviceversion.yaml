@@ -65,6 +65,7 @@ metadata:
     com.redhat.openshift.versions: v4.12-v4.18
     containerImage: quay.io/samzhu/alibaba-cloud-csi-operator@sha256:ee9eaf83cd98b1efd8a3b05b690794487e081892f979914c07a68e3107a4d4ad
     createdAt: "2026-06-23T16:15:00Z"
+    repository: https://github.com/SammZhu/alibaba-cloud-csi-operator
     description: Installs and manages Alibaba Cloud CSI drivers (Disk/NAS/OSS) on
       OpenShift External Platform clusters using RAM Role instance principal authentication.
     features.operators.openshift.io/disconnected: "true"

@@ -94,6 +94,37 @@ The **committed `bundle/`** is the single source of truth for the
 community-operators submission (fully digest-pinned) and for `Validate OLM bundle`
 in CI. See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the install paths.
 
+## 6. Publish to OperatorHub (community-operators-prod)
+
+Optional, per release. The OpenShift embedded OperatorHub "Community" tab is
+sourced from [`redhat-openshift-ecosystem/community-operators-prod`](https://github.com/redhat-openshift-ecosystem/community-operators-prod)
+— a classic bundle-per-version layout (`operators/<name>/<version>/…` + an
+operator-level `ci.yaml`). Assemble the submission tree from the committed bundle:
+
+```sh
+hack/build-community-submission.sh                 # VERSION from Makefile
+#   -> dist/community-operators/operators/alibaba-cloud-csi-operator/{ci.yaml,<ver>/}
+# or write straight into your fork's operators/ dir:
+hack/build-community-submission.sh 0.1.8 <fork>/operators
+```
+
+It copies `bundle/{manifests,metadata,tests}`, rewrites `bundle.Dockerfile` to
+relative `COPY`, writes `ci.yaml` (`updateGraph: replaces-mode` + reviewers), and
+runs `operator-sdk bundle validate` (operatorframework + good-practices). It
+**refuses to run** if the operator image isn't digest-pinned (i.e. you skipped
+`make bundle-pin-operator`).
+
+Then, in a fork of `community-operators-prod`, DCO-sign and PR:
+
+```sh
+git add operators/alibaba-cloud-csi-operator
+git commit -s -m "operator alibaba-cloud-csi-operator (0.1.8)"
+git push && gh pr create --repo redhat-openshift-ecosystem/community-operators-prod
+```
+
+The community pipeline validates + a reviewer/bot approves (like the CAPA upstream
+PR). First submission = new operator dir; updates = add a new `<version>/` dir.
+
 ## Why the bundle isn't regenerated in CI
 
 The CI catalog-build path builds the bundle image **from the committed dir**

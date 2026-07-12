@@ -139,6 +139,8 @@ jobs:
     name: Build & Preflight (podman)
     runs-on: ubuntu-latest
     needs: build-test
+    permissions:
+      contents: write   # commit the CI-pinned bundle back to main on release
 
     steps:
       - uses: actions/checkout@v7

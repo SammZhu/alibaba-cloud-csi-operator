@@ -1,12 +1,13 @@
 # Release process
 
-Cutting a new operator release, e.g. `v0.1.8`. The bundle CSV is **hand-
-maintained** — it does not round-trip through `make bundle` (that reflows the
-whole file and rewrites `createdAt`), so we bump versions by hand and re-pin the
-operator image digest with a helper, rather than regenerating.
+Cutting a new operator release, e.g. `v0.1.8`. The maintainer only **bumps the
+version and tags** — CI builds the release image and pins the bundle to it. The
+bundle CSV is hand-maintained (it does not round-trip through `make bundle`, which
+reflows the whole file and dupes `relatedImages`), so CI re-pins the operator
+image digest with a surgical helper rather than regenerating.
 
-Prerequisites: `podman login quay.io` (push rights), `operator-sdk v1.42.2`,
-Go 1.26+.
+Prerequisite for tagging: push access to `main`. CI holds the quay push
+credentials — you do **not** build or push images locally.
 
 ## 0. Pre-flight (after code changes)
 
@@ -18,52 +19,33 @@ make fmt vet test         # unit tests (fake client, no cluster needed)
 > If you changed **API types**, `make manifests` updates `config/crd/`. Also copy
 > the regenerated CRDs into `bundle/manifests/` and commit both — CI's *Validate
 > generated manifests* job fails on `config/crd` drift. Controller-logic-only
-> changes can skip this step.
+> changes can skip this.
 
-## 1. Bump the version (four spots)
+## 1. Bump the version + roll the changelog
 
-Replace the old version with the new one in:
+Replace the old version with the new one in three spots. The base CSV under
+`config/manifests/bases/` stays at its `0.0.0` placeholder — **don't touch it**
+(operator-sdk injects the version at generation time).
 
 | File | Field |
 |---|---|
 | `Makefile` | `VERSION ?= 0.1.8` |
 | `config/manager/kustomization.yaml` | `newTag: v0.1.8` |
-| `bundle/manifests/…clusterserviceversion.yaml` | `name: alibaba-cloud-csi-operator.v0.1.8` |
-| `bundle/manifests/…clusterserviceversion.yaml` | `version: 0.1.8` (and add `replaces: alibaba-cloud-csi-operator.v0.1.7`) |
+| `bundle/manifests/…clusterserviceversion.yaml` | `name: …v0.1.8` **and** `version: 0.1.8` |
 
-Also roll `CHANGELOG.md`: rename the `[Unreleased]` heading to `[v0.1.8]` and add a
-fresh empty `[Unreleased]` above it. Optionally refresh the CSV `createdAt`
-timestamp to the release date.
+Roll `CHANGELOG.md`: rename `[Unreleased]` → `[v0.1.8]`, add a fresh empty
+`[Unreleased]`. Optionally refresh the CSV `createdAt`.
 
-> The deploy repo's `ansible/vars/images.yml` `csi_operator_image_tag` is bumped
-> **automatically** by the `sync-deploy-tag` CI job on the tag push — don't edit it
-> by hand. See that file's comment for the tag-vs-digest split.
+> **`replaces`**: add `replaces: alibaba-cloud-csi-operator.v<prev>` to the CSV
+> only when the previous version is already published to the catalog you're
+> updating. The **first** community-operators submission has no predecessor —
+> omit it.
 
-## 2. Build + push the operator image
+> You do NOT pin the operator image digest by hand — CI does it (§ 2). The
+> committed bundle may still reference the previous release's digest at tag time;
+> CI overwrites it with the new one and commits the result back to `main`.
 
-The digest must exist in the registry before we can pin it:
-
-```sh
-make docker-build docker-push VERSION=0.1.8
-```
-
-## 3. Pin the operator's own image by digest in the bundle
-
-```sh
-make bundle-pin-operator VERSION=0.1.8
-```
-
-This resolves the pushed image's digest and rewrites the **three** operator-image
-references in the CSV (`containerImage` annotation, manager Deployment `image:`,
-and the `relatedImages` `manager` entry) to `…@sha256:…`. The six sig-storage
-sidecars are already digest-pinned and are left untouched. Idempotent, and it runs
-`operator-sdk bundle validate` at the end.
-
-> If you also bumped a **sidecar** version, update its `RELATED_IMAGE_*` value in
-> `config/manager/manager.yaml` and the matching `relatedImages` digest in the CSV
-> by hand — those are the only other images.
-
-## 4. Commit, tag, push
+## 2. Commit, tag, push
 
 ```sh
 git add Makefile config/manager/kustomization.yaml bundle/ CHANGELOG.md
@@ -72,34 +54,41 @@ git tag v0.1.8
 git push origin main --tags
 ```
 
-On the `v*` tag, CI:
-- asserts `tag == v$(VERSION)` — fails loudly if you didn't bump all four spots;
-- **guards** that the committed bundle references this release's operator image by
-  digest — fails if you skipped step 3 (`make bundle-pin-operator`);
-- builds + pushes the `-bundle` and `-catalog` images **from the committed bundle
-  dir** (the SSOT — no regeneration), for the air-gap / CatalogSource path;
-- runs `sync-deploy-tag` to bump `csi_operator_image_tag` in the deploy repo.
+On the `v*` tag, CI (the `container-build` job):
 
-Both guards **fail loudly** — a half-done release never ships silently.
+- asserts `tag == v$(VERSION)` — fails if the bump wasn't in lockstep;
+- **builds + pushes the operator image** `:v0.1.8` (`linux/amd64`, from the tag
+  source — so it carries the current Go toolchain / CVE fixes) and `:latest`;
+- **pins the committed bundle** to that image's freshly-published digest
+  (`hack/pin-operator-digest.py`), then builds + pushes the `-bundle` and
+  `-catalog` images from the pinned committed dir (no `make bundle` regeneration);
+- **commits the re-pinned bundle back to `main`** (with `[skip ci]`) so the git
+  SSOT matches the published image;
+- `sync-deploy-tag` bumps `csi_operator_image_tag` in the deploy repo.
 
-## 5. Verify
+CI is the single image builder, so the bundle always references exactly the image
+this tag published — no local build, no pre-pin, no non-reproducible digest
+mismatch.
+
+## 3. Verify
 
 ```sh
-# CI green (esp. the release job's guard + `Validate OLM bundle`), then:
+git checkout main && git pull            # pick up CI's re-pin commit
 git show HEAD:bundle/manifests/*.clusterserviceversion.yaml | grep containerImage
 #   -> quay.io/samzhu/alibaba-cloud-csi-operator@sha256:<new digest>
 ```
 
-The **committed `bundle/`** is the single source of truth for the
-community-operators submission (fully digest-pinned) and for `Validate OLM bundle`
-in CI. See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the install paths.
+Confirm CI is green and `main` carries the re-pinned bundle. The committed
+`bundle/` is the SSOT for the community-operators submission (§ 4) and for
+`Validate OLM bundle` in CI.
 
-## 6. Publish to OperatorHub (community-operators-prod)
+## 4. Publish to OperatorHub (community-operators-prod)
 
 Optional, per release. The OpenShift embedded OperatorHub "Community" tab is
 sourced from [`redhat-openshift-ecosystem/community-operators-prod`](https://github.com/redhat-openshift-ecosystem/community-operators-prod)
 — a classic bundle-per-version layout (`operators/<name>/<version>/…` + an
-operator-level `ci.yaml`). Assemble the submission tree from the committed bundle:
+operator-level `ci.yaml`). Assemble the submission tree from the committed bundle
+(after § 3, so it's digest-pinned):
 
 ```sh
 hack/build-community-submission.sh                 # VERSION from Makefile
@@ -110,9 +99,8 @@ hack/build-community-submission.sh 0.1.8 <fork>/operators
 
 It copies `bundle/{manifests,metadata,tests}`, rewrites `bundle.Dockerfile` to
 relative `COPY`, writes `ci.yaml` (`updateGraph: replaces-mode` + reviewers), and
-runs `operator-sdk bundle validate` (operatorframework + good-practices). It
-**refuses to run** if the operator image isn't digest-pinned (i.e. you skipped
-`make bundle-pin-operator`).
+runs `operator-sdk bundle validate`. It **refuses to run** if the operator image
+isn't digest-pinned.
 
 Then, in a fork of `community-operators-prod`, DCO-sign and PR:
 
@@ -125,10 +113,16 @@ git push && gh pr create --repo redhat-openshift-ecosystem/community-operators-p
 The community pipeline validates + a reviewer/bot approves (like the CAPA upstream
 PR). First submission = new operator dir; updates = add a new `<version>/` dir.
 
+## Manual pin (rarely needed)
+
+`make bundle-pin-operator VERSION=x.y.z` resolves the pushed `:vx.y.z` image's
+digest and re-pins the committed bundle locally. CI does this automatically on a
+tag; run it by hand only to repair a bundle out of band.
+
 ## Why the bundle isn't regenerated in CI
 
-The CI catalog-build path builds the bundle image **from the committed dir**
+The CI catalog build builds the bundle image **from the committed dir**
 (`make bundle-build bundle-push`), not by regenerating with `make bundle`.
 Regenerating reflows the CSV and, with `--use-image-digests`, merges
 `relatedImages` into duplicate entries — so the committed bundle is the SSOT, kept
-digest-pinned by step 3.
+digest-pinned by CI's re-pin step.

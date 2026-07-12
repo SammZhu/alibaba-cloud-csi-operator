@@ -19,7 +19,7 @@ metadata:
     features.operators.openshift.io/token-auth-azure: "false"
     features.operators.openshift.io/token-auth-gcp: "false"
     operatorframework.io/suggested-namespace: kube-system
-    support: SammZhu
+    support: Sam Choo
   name: alibaba-cloud-csi-operator.v0.0.0
   namespace: placeholder
 spec:
@@ -216,11 +216,11 @@ spec:
   - name: Source Code
     url: https://github.com/SammZhu/alibaba-cloud-csi-operator
   maintainers:
-  - email: zhuhe@msn.com
-    name: Sam Zhu
+  - email: zhuhe+csi-operator@msn.com
+    name: Sam Choo
   maturity: alpha
   minKubeVersion: 1.28.0
   provider:
-    name: SammZhu
+    name: Sam Choo
     url: https://github.com/SammZhu
   version: 0.0.0

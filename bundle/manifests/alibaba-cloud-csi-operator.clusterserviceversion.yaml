@@ -78,7 +78,7 @@ metadata:
     operatorframework.io/suggested-namespace: kube-system
     operators.operatorframework.io/builder: operator-sdk-v1.42.2
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
-    support: SammZhu
+    support: Sam Choo
   name: alibaba-cloud-csi-operator.v0.1.7
   namespace: placeholder
 spec:
@@ -495,12 +495,12 @@ spec:
   - name: Source Code
     url: https://github.com/SammZhu/alibaba-cloud-csi-operator
   maintainers:
-  - email: zhuhe@msn.com
-    name: Sam Zhu
+  - email: zhuhe+csi-operator@msn.com
+    name: Sam Choo
   maturity: alpha
   minKubeVersion: 1.28.0
   provider:
-    name: SammZhu
+    name: Sam Choo
     url: https://github.com/SammZhu
   relatedImages:
   - image: quay.io/samzhu/alibaba-cloud-csi-operator@sha256:ee9eaf83cd98b1efd8a3b05b690794487e081892f979914c07a68e3107a4d4ad

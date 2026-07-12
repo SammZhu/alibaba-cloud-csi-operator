@@ -139,6 +139,8 @@ jobs:
     name: Build & Preflight (podman)
     runs-on: ubuntu-latest
     needs: build-test
+    permissions:
+      contents: write   # commit the CI-pinned bundle back to main on release
 
     steps:
       - uses: actions/checkout@v7
@@ -261,7 +263,7 @@ jobs:
       # :v$(VERSION) bundle/catalog are immutable release images (not rebuilt on
       # every main commit). The bundle must be pushed before catalog-build, which
       # runs `opm index add --bundles <bundle image>` against the registry.
-      - name: Build and push bundle + catalog (release only)
+      - name: Pin bundle + build/push bundle & catalog (release only)
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
@@ -272,22 +274,38 @@ jobs:
             exit 0
           fi
           echo "$QUAY_PASSWORD" | podman login quay.io -u "$QUAY_USERNAME" --password-stdin
-          # The committed bundle/ is the SSOT (hand-maintained, digest-pinned). Do
-          # NOT regenerate it here — `make bundle` reflows the CSV and dupes
-          # relatedImages. Build the bundle IMAGE straight from the committed dir.
-          # BUNDLE_IMG / CATALOG_IMG expand from VERSION (asserted == tag above) to
-          # quay.io/samzhu/alibaba-cloud-csi-operator-{bundle,catalog}:v$(VERSION).
-          # Guard: the committed bundle must already reference THIS release's operator
-          # image BY DIGEST — i.e. `make bundle-pin-operator` was run + committed
-          # before tagging (see RELEASE.md). Fail loudly otherwise.
-          podman pull -q ${{ steps.tags.outputs.image_ver }}
-          DIGEST=$(podman image inspect ${{ steps.tags.outputs.image_ver }} --format '{{index .RepoDigests 0}}' | sed 's/.*@//')
-          if ! grep -q "alibaba-cloud-csi-operator@${DIGEST}" bundle/manifests/*.clusterserviceversion.yaml; then
-            echo "::error::committed bundle does not reference operator digest ${DIGEST} — run 'make bundle-pin-operator' and commit before tagging (RELEASE.md)."
-            exit 1
-          fi
+          # The operator image (:v$(VERSION), amd64) was built + pushed above. CI is
+          # the SINGLE builder, so pin the committed bundle to ITS freshly-published
+          # digest right here — no pre-pin, no non-reproducible-digest mismatch. Then
+          # build the bundle/catalog IMAGES from the pinned committed dir (the SSOT;
+          # never `make bundle`, which reflows the CSV + dupes relatedImages).
+          IMG_VER='${{ steps.tags.outputs.image_ver }}'
+          IMG_REPO="${IMG_VER%:*}"
+          podman pull -q "$IMG_VER"
+          DIGEST=$(podman image inspect "$IMG_VER" --format '{{index .RepoDigests 0}}' | sed 's/.*@//')
+          python3 hack/pin-operator-digest.py bundle/manifests/*.clusterserviceversion.yaml \
+            --repo "$IMG_REPO" --digest "$DIGEST"
+          echo "OPERATOR_IMG_REPO=$IMG_REPO" >> "$GITHUB_ENV"
+          echo "OPERATOR_DIGEST=$DIGEST"     >> "$GITHUB_ENV"
           make bundle-build bundle-push
           make catalog-build catalog-push BUNDLE_IMGS=${{ steps.tags.outputs.bundle_img }}
+
+      - name: Commit the re-pinned bundle back to main (release only)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && env.OPERATOR_DIGEST != ''
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main FETCH_HEAD
+          python3 hack/pin-operator-digest.py bundle/manifests/*.clusterserviceversion.yaml \
+            --repo "$OPERATOR_IMG_REPO" --digest "$OPERATOR_DIGEST"
+          if git diff --quiet; then
+            echo "main already pinned to $OPERATOR_DIGEST"
+          else
+            git add bundle/manifests/*.clusterserviceversion.yaml
+            git commit -s -m "chore(release): pin bundle to operator digest ${{ steps.tags.outputs.version }} [skip ci]"
+            git push origin HEAD:main
+          fi
       
       # NOTE: `preflight check operator` is intentionally NOT run in CI.
       # Unlike `preflight check container` which inspects the image manifest
@@ -304,6 +322,8 @@ jobs:
     name: Cross-compile Linux amd64 binary
     runs-on: ubuntu-latest
     needs: build-test
+    permissions:
+      contents: write   # commit the CI-pinned bundle back to main on release
 
     steps:
       - uses: actions/checkout@v7

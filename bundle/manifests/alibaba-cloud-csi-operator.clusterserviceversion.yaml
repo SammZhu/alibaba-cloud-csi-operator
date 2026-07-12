@@ -79,7 +79,7 @@ metadata:
     operators.operatorframework.io/builder: operator-sdk-v1.42.2
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
     support: Sam Choo
-  name: alibaba-cloud-csi-operator.v0.1.7
+  name: alibaba-cloud-csi-operator.v0.1.8
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -517,4 +517,4 @@ spec:
     name: csi-node-driver-registrar
   - image: registry.k8s.io/sig-storage/livenessprobe@sha256:4dc0b87ccd69f9865b89234d8555d3a614ab0a16ed94a3016ffd27f8106132ce
     name: livenessprobe
-  version: 0.1.7
+  version: 0.1.8

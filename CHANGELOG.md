@@ -6,6 +6,8 @@ semantic versioning within the `v0.1.x` line.
 
 ## [Unreleased]
 
+## [v0.1.8]
+
 - **Platform-adaptive privileged admission**: detect the OpenShift SCC API via the
   RESTMapper — bind the privileged SCC on OpenShift, or label the operator
   namespace for privileged Pod Security Admission on vanilla Kubernetes. Makes the
@@ -15,10 +17,11 @@ semantic versioning within the `v0.1.x` line.
   sidecars, now sourced from `registry.k8s.io/sig-storage` via `RELATED_IMAGE_*`
   (the previous `acs/*` tags didn't resolve publicly). A complete disconnected
   image set for operatorhub / air-gapped installs.
-- **Release flow**: `make bundle-pin-operator` re-pins the operator image digest in
-  the committed bundle without regenerating it; the tag-time CI catalog build now
-  builds from the committed bundle (the SSOT) and fails if it isn't digest-pinned
-  for the release. See [RELEASE.md](RELEASE.md).
+- **Release flow**: the operator image, bundle digest-pinning, and the
+  bundle/catalog images are all produced by CI on a `v*` tag — the maintainer only
+  bumps the version and tags. CI pins the committed bundle to the freshly-published
+  image digest and commits it back to `main`. `make bundle-pin-operator` remains
+  for manual repair. See [RELEASE.md](RELEASE.md).
 - **CSV metadata**: icon, `provider`, `maturity`, `minKubeVersion`, and support
   contact — for a clean operatorhub listing.
 - **Onboarding**: `make demo` (hermetic kind run, no cloud) + `docs/QUICKSTART.md`
@@ -28,6 +31,12 @@ semantic versioning within the `v0.1.x` line.
 - **ci**: Trivy now scans the locally-built image tarball so the CVE gate runs on
   PRs too (previously failed with MANIFEST_UNKNOWN — the image is not pushed on PRs);
   add a `govulncheck` gate and Dependabot.
+- **security**: bump the Go toolchain to 1.26.5 (GO-2026-5856, `crypto/tls`).
+- **bundle metadata**: digest-pin the operator's own image (added to
+  `relatedImages`); add the `repository` annotation; unify the maintainer to
+  "Sam Choo" with a plus-alias contact email.
+- **submission**: `hack/build-community-submission.sh` assembles the
+  community-operators-prod tree from the committed bundle (RELEASE.md § 4).
 
 ## [v0.1.7]
 - Grant `volumesnapshotcontents/status` RBAC so VolumeSnapshots reach `readyToUse`.

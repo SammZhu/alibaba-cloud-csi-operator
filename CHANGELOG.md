@@ -7,7 +7,7 @@ semantic versioning within the `v0.1.x` line.
 ## [Unreleased]
 
 ## [v0.1.8]
-- **bundle (community-operators)**: drop the two kubebuilder NetworkPolicy objects (OLM does not support NetworkPolicy as a bundle resource) and add `com.redhat.openshift.versions: v4.12-v4.18` to `metadata/annotations.yaml` (required when `minKubeVersion` is set).
+- **bundle (community-operators)**: drop the two kubebuilder NetworkPolicy objects (OLM does not support NetworkPolicy as a bundle resource) and add `com.redhat.openshift.versions: v4.15-v4.20` to `metadata/annotations.yaml` (required when `minKubeVersion` is set).
 
 - **Platform-adaptive privileged admission**: detect the OpenShift SCC API via the
   RESTMapper — bind the privileged SCC on OpenShift, or label the operator

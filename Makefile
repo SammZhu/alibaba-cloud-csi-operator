@@ -347,6 +347,11 @@ bundle-push: ## Push the bundle image.
 .PHONY: bundle-pin-operator
 bundle-pin-operator: operator-sdk ## Re-pin the operator's own image by digest in the committed bundle CSV (resolves $(IMG)).
 	@echo ">> resolving digest for $(IMG)"
+	# Drop any local copy first: after a local build+push+pull the image can carry
+	# TWO RepoDigests (the stale build-time one + the registry one) and
+	# `{{index .RepoDigests 0}}` may pick the wrong/phantom one. rmi + fresh pull
+	# leaves exactly the registry digest.
+	@$(CONTAINER_TOOL) rmi $(IMG) >/dev/null 2>&1 || true
 	@$(CONTAINER_TOOL) pull -q $(IMG) >/dev/null
 	@DIGEST=$$($(CONTAINER_TOOL) image inspect $(IMG) --format '{{index .RepoDigests 0}}' | sed 's/.*@//'); \
 	  echo ">> $(IMG) -> $$DIGEST"; \

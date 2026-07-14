@@ -6,6 +6,14 @@ semantic versioning within the `v0.1.x` line.
 
 ## [Unreleased]
 
+## [v0.1.9]
+- **OCP range → v4.15-v4.22**: extend `com.redhat.openshift.versions` from
+  `v4.15-v4.20` so the operator is listed on OpenShift 4.21/4.22. Validated on
+  **OpenShift 4.22 (CRC 2.62)**: operator installs via OLM, reconciles all objects
+  (CSIDriver / StorageClasses / controller Deployments / node DaemonSets) and
+  reports `Available=True`, `diskDriverReady`/`nasDriverReady=true`. Code
+  unchanged from v0.1.8 (bundle-metadata release).
+
 ## [v0.1.8]
 - **bundle (community-operators)**: drop the two kubebuilder NetworkPolicy objects (OLM does not support NetworkPolicy as a bundle resource) and add `com.redhat.openshift.versions: v4.15-v4.20` to `metadata/annotations.yaml` (required when `minKubeVersion` is set).
 

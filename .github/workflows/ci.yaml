@@ -218,7 +218,7 @@ jobs:
             exit 0
           fi
           echo "$QUAY_PASSWORD" | podman login quay.io -u "$QUAY_USERNAME" --password-stdin
-          podman push ${{ steps.tags.outputs.primary }}
+          podman push --digestfile=/tmp/operator.digest ${{ steps.tags.outputs.primary }}
           podman push ${{ steps.tags.outputs.image_latest }}
 
       - name: Install preflight
@@ -281,8 +281,7 @@ jobs:
           # never `make bundle`, which reflows the CSV + dupes relatedImages).
           IMG_VER='${{ steps.tags.outputs.image_ver }}'
           IMG_REPO="${IMG_VER%:*}"
-          podman pull -q "$IMG_VER"
-          DIGEST=$(podman image inspect "$IMG_VER" --format '{{index .RepoDigests 0}}' | sed 's/.*@//')
+          DIGEST=$(cat /tmp/operator.digest)   # sha256:… 由 push --digestfile 写入(registry 权威 digest)          
           python3 hack/pin-operator-digest.py bundle/manifests/*.clusterserviceversion.yaml \
             --repo "$IMG_REPO" --digest "$DIGEST"
           echo "OPERATOR_IMG_REPO=$IMG_REPO" >> "$GITHUB_ENV"

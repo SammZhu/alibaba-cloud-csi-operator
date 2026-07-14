@@ -112,6 +112,29 @@ git push && gh pr create --repo redhat-openshift-ecosystem/community-operators-p
 
 The community pipeline validates + a reviewer/bot approves (like the CAPA upstream
 PR). First submission = new operator dir; updates = add a new `<version>/` dir.
+The **author cannot self-`/lgtm`** (Prow) — a repo maintainer approves.
+
+### Update graph — `replaces` vs `skips` (CSV `spec`)
+
+A new version added to the `stable` channel must connect to its predecessor or the
+predecessor **dangles** (`check_dangling_bundles`, a channel-graph check that
+**ignores** the OCP range). How you connect depends on the OCP range:
+
+- **First submission**: no `replaces` (no predecessor).
+- **Same/narrower OCP range as the predecessor**: add
+  `spec.replaces: alibaba-cloud-csi-operator.v<prev>`.
+- **WIDER OCP range than the predecessor** (e.g. predecessor caps at 4.20, you
+  want 4.22): **use `spec.skips: [alibaba-cloud-csi-operator.v<prev>]`, NOT
+  `replaces`** — and set `com.redhat.openshift.versions` to the *disjoint* new
+  range (e.g. `v4.21-v4.22`). `replaces` triggers `check_replaces_availability`,
+  which requires the replaced bundle to exist in **every** OCP catalog the new
+  bundle targets — impossible when the (immutable) predecessor's range is
+  narrower. `skips` connects the channel graph without that per-catalog
+  requirement. (The truly general answer for per-OCP graphs is **FBC**; the
+  pipeline warns to migrate. `skips` is the classic-format workaround.)
+
+`v0.1.9` is the worked example: OCP `v4.21-v4.22`, `spec.skips: [...v0.1.8]`, no
+`replaces`.
 
 ## Manual pin (rarely needed)
 

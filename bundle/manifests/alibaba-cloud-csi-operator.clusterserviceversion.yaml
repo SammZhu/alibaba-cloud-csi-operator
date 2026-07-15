@@ -63,7 +63,7 @@ metadata:
     categories: Storage
     certified: "false"
     com.redhat.openshift.versions: v4.21-v4.22
-    containerImage: quay.io/samzhu/alibaba-cloud-csi-operator@sha256:03a18eaf0af5f90a260f23f18c2d61270a2ffebe19cfc5e8b866f5b12cfe0636
+    containerImage: quay.io/samzhu/alibaba-cloud-csi-operator@sha256:c9f6ac48e0f7cbc7fa6182b0dc0d806e354c389947bb80426a524daf42e159a4
     createdAt: "2026-07-15T00:00:00Z"
     repository: https://github.com/SammZhu/alibaba-cloud-csi-operator
     description: Installs and manages Alibaba Cloud CSI drivers (Disk/NAS/OSS) on
@@ -402,7 +402,7 @@ spec:
                   value: registry.k8s.io/sig-storage/csi-node-driver-registrar@sha256:f6717ce72a2615c7fbc746b4068f788e78579c54c43b8716e5ce650d97af2df1
                 - name: RELATED_IMAGE_LIVENESSPROBE
                   value: registry.k8s.io/sig-storage/livenessprobe@sha256:4dc0b87ccd69f9865b89234d8555d3a614ab0a16ed94a3016ffd27f8106132ce
-                image: quay.io/samzhu/alibaba-cloud-csi-operator@sha256:03a18eaf0af5f90a260f23f18c2d61270a2ffebe19cfc5e8b866f5b12cfe0636
+                image: quay.io/samzhu/alibaba-cloud-csi-operator@sha256:c9f6ac48e0f7cbc7fa6182b0dc0d806e354c389947bb80426a524daf42e159a4
                 livenessProbe:
                   httpGet:
                     path: /healthz
@@ -507,7 +507,7 @@ spec:
     name: Sam Choo
     url: https://github.com/SammZhu
   relatedImages:
-  - image: quay.io/samzhu/alibaba-cloud-csi-operator@sha256:03a18eaf0af5f90a260f23f18c2d61270a2ffebe19cfc5e8b866f5b12cfe0636
+  - image: quay.io/samzhu/alibaba-cloud-csi-operator@sha256:c9f6ac48e0f7cbc7fa6182b0dc0d806e354c389947bb80426a524daf42e159a4
     name: manager
   - image: registry.k8s.io/sig-storage/csi-provisioner@sha256:d078dc174323407e8cc6f0f9abd4efaac5db27838f1564d0253d5e3233e3f17f
     name: csi-provisioner

@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -201,12 +202,16 @@ func (r *AlibabaCloudCSIDriverReconciler) Reconcile(ctx context.Context, req ctr
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+// We intentionally do NOT Own() the created workloads. The apply helpers write
+// them unconditionally every reconcile; with an Owns() watch active (now that the
+// objects carry owner references) that self-triggers a reconcile hot loop and the
+// racing updates conflict. Owner references still drive garbage collection on CR
+// deletion — that does not need a watch. Reconciles are driven by the CR itself;
+// resource self-healing on drift would require idempotent (diff-aware) applies.
 func (r *AlibabaCloudCSIDriverReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&csiv1alpha1.AlibabaCloudCSIDriver{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&appsv1.DaemonSet{}).
-		Owns(&storagev1.StorageClass{}).
 		Named("alibabacloudcsidriver").
 		Complete(r)
 }
@@ -1225,17 +1230,21 @@ func (r *AlibabaCloudCSIDriverReconciler) createOrAdopt(ctx context.Context, cr 
 	if !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	existing := obj.DeepCopyObject().(client.Object)
-	if err := r.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, existing); err != nil {
-		return err
-	}
-	if metav1.IsControlledBy(existing, cr) {
-		return nil
-	}
-	if err := controllerutil.SetControllerReference(cr, existing, r.Scheme); err != nil {
-		return err
-	}
-	return r.Update(ctx, existing)
+	// Adopt an object left by a pre-owner-reference version so teardown GCs it.
+	// Re-Get inside the retry so a concurrent modification is handled cleanly.
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		existing := obj.DeepCopyObject().(client.Object)
+		if err := r.Get(ctx, client.ObjectKeyFromObject(obj), existing); err != nil {
+			return err
+		}
+		if metav1.IsControlledBy(existing, cr) {
+			return nil
+		}
+		if err := controllerutil.SetControllerReference(cr, existing, r.Scheme); err != nil {
+			return err
+		}
+		return r.Update(ctx, existing)
+	})
 }
 
 // createOrUpdate creates the object (owned by cr) if it does not exist, or
@@ -1245,16 +1254,18 @@ func (r *AlibabaCloudCSIDriverReconciler) createOrUpdate(ctx context.Context, cr
 	if err := controllerutil.SetControllerReference(cr, obj, r.Scheme); err != nil {
 		return err
 	}
-	existing := obj.DeepCopyObject().(client.Object)
-	err := r.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return r.Create(ctx, obj)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		existing := obj.DeepCopyObject().(client.Object)
+		err := r.Get(ctx, client.ObjectKeyFromObject(obj), existing)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return r.Create(ctx, obj)
+			}
+			return err
 		}
-		return err
-	}
-	obj.SetResourceVersion(existing.GetResourceVersion())
-	return r.Update(ctx, obj)
+		obj.SetResourceVersion(existing.GetResourceVersion())
+		return r.Update(ctx, obj)
+	})
 }
 
 func toCoreTolerations(in []csiv1alpha1.TolerationSpec) []corev1.Toleration {

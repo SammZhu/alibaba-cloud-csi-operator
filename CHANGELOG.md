@@ -6,7 +6,7 @@ semantic versioning within the `v0.1.x` line.
 
 ## [Unreleased]
 
-## [v0.1.11]
+## [v0.1.12]
 - **Clean uninstall via owner references**: every resource the operator creates —
   the cluster-scoped CSIDriver / StorageClass / ClusterRole / ClusterRoleBinding /
   VolumeSnapshotClass and the namespaced controller Deployments / node DaemonSets /
@@ -18,8 +18,14 @@ semantic versioning within the `v0.1.x` line.
   operator version are **adopted** on the next reconcile (the owner reference is
   added in place), so upgraded clusters get clean teardown too. Fixes the leftover
   CSIDriver/StorageClass/RBAC/workload objects observed after uninstall on
-  OpenShift 4.22 (CRC). As a side effect the previously-inert `Owns()` watches now
-  fire, giving the workloads self-healing on drift.
+  OpenShift 4.22 (CRC). Garbage collection is a control-plane function, so teardown
+  works even if the operator Pod is already gone. The controller does **not** watch
+  the created workloads (`Owns()`): the apply helpers write them unconditionally
+  every reconcile, and an active `Owns()` watch would self-trigger a reconcile hot
+  loop whose racing updates conflict — owner references drive GC without needing a
+  watch. Apply helpers retry on update conflicts. Verified end-to-end on a real API
+  server (kind): deleting the CR garbage-collects all owned objects; no reconcile
+  loop (2 reconciles, 0 errors).
 
 ## [v0.1.10]
 - **OperatorHub listing metadata** (bundle-only; operand image is byte-identical to

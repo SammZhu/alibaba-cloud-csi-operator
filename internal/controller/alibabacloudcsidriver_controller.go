@@ -38,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	csiv1alpha1 "github.com/SammZhu/alibaba-cloud-csi-operator/api/v1alpha1"
@@ -213,13 +214,13 @@ func (r *AlibabaCloudCSIDriverReconciler) SetupWithManager(mgr ctrl.Manager) err
 // ── RBAC ────────────────────────────────────────────────────────────────────────
 
 func (r *AlibabaCloudCSIDriverReconciler) ensureRBAC(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver) error {
-	if err := r.ensureServiceAccount(ctx); err != nil {
+	if err := r.ensureServiceAccount(ctx, cr); err != nil {
 		return err
 	}
-	if err := r.ensureClusterRole(ctx); err != nil {
+	if err := r.ensureClusterRole(ctx, cr); err != nil {
 		return err
 	}
-	if err := r.ensureClusterRoleBinding(ctx); err != nil {
+	if err := r.ensureClusterRoleBinding(ctx, cr); err != nil {
 		return err
 	}
 	// Privileged-pod admission for the node DaemonSet is platform-specific:
@@ -227,24 +228,24 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureRBAC(ctx context.Context, cr *cs
 	// Security Admission. Detect which API the cluster serves and adapt.
 	if r.sccAvailable() {
 		logf.FromContext(ctx).Info("admission backend: OpenShift SCC (privileged)")
-		return r.ensureSCCBinding(ctx)
+		return r.ensureSCCBinding(ctx, cr)
 	}
 	logf.FromContext(ctx).Info("admission backend: Pod Security Admission (no SCC API found)")
 	return r.ensurePrivilegedNamespacePSA(ctx)
 }
 
-func (r *AlibabaCloudCSIDriverReconciler) ensureServiceAccount(ctx context.Context) error {
+func (r *AlibabaCloudCSIDriverReconciler) ensureServiceAccount(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver) error {
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceAccountName,
 			Namespace: operatorNamespace,
 		},
 	}
-	return createOrIgnore(ctx, r.Client, sa)
+	return r.createOrAdopt(ctx, cr, sa)
 }
 
-func (r *AlibabaCloudCSIDriverReconciler) ensureClusterRole(ctx context.Context) error {
-	cr := &rbacv1.ClusterRole{
+func (r *AlibabaCloudCSIDriverReconciler) ensureClusterRole(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver) error {
+	role := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{Name: "alibaba-cloud-csi-role"},
 		Rules: []rbacv1.PolicyRule{
 			{APIGroups: []string{""}, Resources: []string{"nodes", "namespaces", "pods", "persistentvolumes", "persistentvolumeclaims"}, Verbs: []string{"get", "list", "watch", "update", "patch"}},
@@ -275,21 +276,21 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureClusterRole(ctx context.Context)
 			{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
 		},
 	}
-	return createOrIgnore(ctx, r.Client, cr)
+	return r.createOrAdopt(ctx, cr, role)
 }
 
-func (r *AlibabaCloudCSIDriverReconciler) ensureClusterRoleBinding(ctx context.Context) error {
+func (r *AlibabaCloudCSIDriverReconciler) ensureClusterRoleBinding(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver) error {
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "alibaba-cloud-csi-binding"},
 		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "alibaba-cloud-csi-role"},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: serviceAccountName, Namespace: operatorNamespace}},
 	}
-	return createOrIgnore(ctx, r.Client, crb)
+	return r.createOrAdopt(ctx, cr, crb)
 }
 
 // ensureSCCBinding grants the CSI ServiceAccount the privileged SCC required
 // for the Node DaemonSet to mount /dev and perform disk operations on RHCOS.
-func (r *AlibabaCloudCSIDriverReconciler) ensureSCCBinding(ctx context.Context) error {
+func (r *AlibabaCloudCSIDriverReconciler) ensureSCCBinding(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver) error {
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "alibabacloud-csi-privileged"},
 		RoleRef: rbacv1.RoleRef{
@@ -299,7 +300,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureSCCBinding(ctx context.Context) 
 		},
 		Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: serviceAccountName, Namespace: operatorNamespace}},
 	}
-	return createOrIgnore(ctx, r.Client, crb)
+	return r.createOrAdopt(ctx, cr, crb)
 }
 
 // sccAvailable reports whether the cluster serves the OpenShift
@@ -355,7 +356,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskDriver(ctx context.Context, 
 	}
 	pluginImage := fmt.Sprintf("%s:%s", csiImage, imageTag)
 
-	if err := r.ensureDiskCSIDriver(ctx); err != nil {
+	if err := r.ensureDiskCSIDriver(ctx, cr); err != nil {
 		return fmt.Errorf("CSIDriver: %w", err)
 	}
 	if err := r.ensureDiskControllerDeployment(ctx, cr, pluginImage); err != nil {
@@ -367,7 +368,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskDriver(ctx context.Context, 
 
 	// VolumeSnapshotClass — must be created before StorageProfile so we can
 	// link spec.snapshotClass when patching.
-	if err := r.ensureVolumeSnapshotClass(ctx, diskDriverName, cr.Spec.Disk.Snapshot); err != nil {
+	if err := r.ensureVolumeSnapshotClass(ctx, cr, diskDriverName, cr.Spec.Disk.Snapshot); err != nil {
 		return fmt.Errorf("VolumeSnapshotClass: %w", err)
 	}
 
@@ -379,7 +380,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskDriver(ctx context.Context, 
 
 	for i, sc := range cr.Spec.Disk.StorageClasses {
 		isDefault := cr.Spec.Disk.DefaultStorageClass && i == 0
-		if err := r.ensureDiskStorageClass(ctx, sc, isDefault); err != nil {
+		if err := r.ensureDiskStorageClass(ctx, cr, sc, isDefault); err != nil {
 			return fmt.Errorf("StorageClass %s: %w", sc.Name, err)
 		}
 		// Patch CDI StorageProfile for OKV compatibility. The volumeMode is taken
@@ -398,7 +399,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskDriver(ctx context.Context, 
 // seLinuxMount: true is required on RHCOS (SELinux enforcing) so that the kubelet
 // applies the correct SELinux label to the mount point before handing it to the driver.
 // This matches the behaviour of the AWS EBS CSI driver on ROSA.
-func (r *AlibabaCloudCSIDriverReconciler) ensureDiskCSIDriver(ctx context.Context) error {
+func (r *AlibabaCloudCSIDriverReconciler) ensureDiskCSIDriver(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver) error {
 	attachRequired := true
 	podInfoOnMount := true
 	seLinuxMount := true
@@ -413,7 +414,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskCSIDriver(ctx context.Contex
 			SELinuxMount:   &seLinuxMount,
 		},
 	}
-	return createOrIgnore(ctx, r.Client, obj)
+	return r.createOrAdopt(ctx, cr, obj)
 }
 
 func (r *AlibabaCloudCSIDriverReconciler) ensureDiskControllerDeployment(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, pluginImage string) error {
@@ -527,7 +528,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskControllerDeployment(ctx con
 		},
 	}
 
-	return createOrUpdate(ctx, r.Client, deploy)
+	return r.createOrUpdate(ctx, cr, deploy)
 }
 
 func (r *AlibabaCloudCSIDriverReconciler) ensureDiskNodeDaemonSet(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, pluginImage string) error {
@@ -646,10 +647,10 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskNodeDaemonSet(ctx context.Co
 		},
 	}
 
-	return createOrUpdate(ctx, r.Client, ds)
+	return r.createOrUpdate(ctx, cr, ds)
 }
 
-func (r *AlibabaCloudCSIDriverReconciler) ensureDiskStorageClass(ctx context.Context, sc csiv1alpha1.DiskStorageClassSpec, isDefault bool) error {
+func (r *AlibabaCloudCSIDriverReconciler) ensureDiskStorageClass(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, sc csiv1alpha1.DiskStorageClassSpec, isDefault bool) error {
 	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
 	if sc.ReclaimPolicy == "Retain" {
 		reclaimPolicy = corev1.PersistentVolumeReclaimRetain
@@ -682,7 +683,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskStorageClass(ctx context.Con
 		Parameters:           params,
 		VolumeBindingMode:    storageClassBindingMode(storagev1.VolumeBindingWaitForFirstConsumer),
 	}
-	return createOrIgnore(ctx, r.Client, obj)
+	return r.createOrAdopt(ctx, cr, obj)
 }
 
 // ── NAS Driver ───────────────────────────────────────────────────────────────────
@@ -701,7 +702,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASDriver(ctx context.Context, c
 	}
 	pluginImage := fmt.Sprintf("%s:%s", csiImage, imageTag)
 
-	if err := r.ensureNASCSIDriver(ctx); err != nil {
+	if err := r.ensureNASCSIDriver(ctx, cr); err != nil {
 		return fmt.Errorf("CSIDriver: %w", err)
 	}
 	if err := r.ensureNASControllerDeployment(ctx, cr, pluginImage); err != nil {
@@ -713,7 +714,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASDriver(ctx context.Context, c
 
 	for i, sc := range cr.Spec.NAS.StorageClasses {
 		isDefault := i == 0 // first NAS class is default NAS class (not cluster default)
-		if err := r.ensureNASStorageClass(ctx, sc, isDefault); err != nil {
+		if err := r.ensureNASStorageClass(ctx, cr, sc, isDefault); err != nil {
 			return fmt.Errorf("StorageClass %s: %w", sc.Name, err)
 		}
 		// Patch CDI StorageProfile for OKV compatibility (NAS = RWX Filesystem mode).
@@ -730,7 +731,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASDriver(ctx context.Context, c
 // Key differences from disk:
 //   - attachRequired: false  — NAS volumes don't need VolumeAttachment objects
 //   - seLinuxMount: false    — NFS mounts don't support SELinux label relabelling
-func (r *AlibabaCloudCSIDriverReconciler) ensureNASCSIDriver(ctx context.Context) error {
+func (r *AlibabaCloudCSIDriverReconciler) ensureNASCSIDriver(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver) error {
 	attachRequired := false
 	podInfoOnMount := true
 	seLinuxMount := false
@@ -745,7 +746,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASCSIDriver(ctx context.Context
 			SELinuxMount:   &seLinuxMount,
 		},
 	}
-	return createOrIgnore(ctx, r.Client, obj)
+	return r.createOrAdopt(ctx, cr, obj)
 }
 
 func (r *AlibabaCloudCSIDriverReconciler) ensureNASControllerDeployment(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, pluginImage string) error {
@@ -832,7 +833,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASControllerDeployment(ctx cont
 		},
 	}
 
-	return createOrUpdate(ctx, r.Client, deploy)
+	return r.createOrUpdate(ctx, cr, deploy)
 }
 
 func (r *AlibabaCloudCSIDriverReconciler) ensureNASNodeDaemonSet(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, pluginImage string) error {
@@ -922,7 +923,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASNodeDaemonSet(ctx context.Con
 		},
 	}
 
-	return createOrUpdate(ctx, r.Client, ds)
+	return r.createOrUpdate(ctx, cr, ds)
 }
 
 // nasStorageClassParameters builds the upstream NAS CSI StorageClass parameters
@@ -984,7 +985,7 @@ func nasStorageClassParameters(sc csiv1alpha1.NASStorageClassSpec) (params map[s
 	return params, missing
 }
 
-func (r *AlibabaCloudCSIDriverReconciler) ensureNASStorageClass(ctx context.Context, sc csiv1alpha1.NASStorageClassSpec, _ bool) error {
+func (r *AlibabaCloudCSIDriverReconciler) ensureNASStorageClass(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, sc csiv1alpha1.NASStorageClassSpec, _ bool) error {
 	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
 	if sc.ReclaimPolicy == "Retain" {
 		reclaimPolicy = corev1.PersistentVolumeReclaimRetain
@@ -1017,7 +1018,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASStorageClass(ctx context.Cont
 		// does not work well with multi-node access patterns.
 		VolumeBindingMode: storageClassBindingMode(storagev1.VolumeBindingImmediate),
 	}
-	return createOrIgnore(ctx, r.Client, obj)
+	return r.createOrAdopt(ctx, cr, obj)
 }
 
 // ── VolumeSnapshotClass ──────────────────────────────────────────────────────────
@@ -1029,7 +1030,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASStorageClass(ctx context.Cont
 // Only the disk driver is wired to call this (see ensureDiskDriver). The NAS CSI
 // driver does not implement CreateSnapshot upstream, so no NAS snapshot class is
 // ever created — see the defaultDiskSnapClassName const block.
-func (r *AlibabaCloudCSIDriverReconciler) ensureVolumeSnapshotClass(ctx context.Context, driverName string, cfg csiv1alpha1.SnapshotConfig) error {
+func (r *AlibabaCloudCSIDriverReconciler) ensureVolumeSnapshotClass(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, driverName string, cfg csiv1alpha1.SnapshotConfig) error {
 	if !cfg.Enabled {
 		return nil
 	}
@@ -1052,6 +1053,10 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureVolumeSnapshotClass(ctx context.
 			"driver":         driverName,
 			"deletionPolicy": "Delete",
 		},
+	}
+
+	if err := controllerutil.SetControllerReference(cr, u, r.Scheme); err != nil {
+		return err
 	}
 
 	if err := r.Client.Create(ctx, u); err != nil {
@@ -1202,25 +1207,54 @@ func buildConditions(allReady bool, err error) []csiv1alpha1.CSIDriverCondition 
 // ── Generic helpers ──────────────────────────────────────────────────────────────
 
 // createOrIgnore creates the object if it does not exist; ignores AlreadyExists.
-func createOrIgnore(ctx context.Context, c client.Client, obj client.Object) error {
-	if err := c.Create(ctx, obj); err != nil && !apierrors.IsAlreadyExists(err) {
+// createOrAdopt creates obj (owned by cr) if it is absent. If it already exists
+// it adopts it by setting the controller reference — this covers resources left
+// by an operator version that predated owner references, so a later
+// `oc delete alibabacloudcsidriver` garbage-collects them instead of orphaning
+// them. cr is cluster-scoped, so it may own both cluster-scoped children
+// (CSIDriver / StorageClass / ClusterRole[Binding]) and namespaced ones
+// (Deployment / DaemonSet / ServiceAccount in kube-system).
+func (r *AlibabaCloudCSIDriverReconciler) createOrAdopt(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, obj client.Object) error {
+	if err := controllerutil.SetControllerReference(cr, obj, r.Scheme); err != nil {
 		return err
 	}
-	return nil
+	err := r.Create(ctx, obj)
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	existing := obj.DeepCopyObject().(client.Object)
+	if err := r.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, existing); err != nil {
+		return err
+	}
+	if metav1.IsControlledBy(existing, cr) {
+		return nil
+	}
+	if err := controllerutil.SetControllerReference(cr, existing, r.Scheme); err != nil {
+		return err
+	}
+	return r.Update(ctx, existing)
 }
 
-// createOrUpdate creates the object if it does not exist, or replaces it if it does.
-func createOrUpdate(ctx context.Context, c client.Client, obj client.Object) error {
+// createOrUpdate creates the object (owned by cr) if it does not exist, or
+// replaces it if it does — writing the owner reference either way, which also
+// adopts an existing object left by a pre-owner-reference operator version.
+func (r *AlibabaCloudCSIDriverReconciler) createOrUpdate(ctx context.Context, cr *csiv1alpha1.AlibabaCloudCSIDriver, obj client.Object) error {
+	if err := controllerutil.SetControllerReference(cr, obj, r.Scheme); err != nil {
+		return err
+	}
 	existing := obj.DeepCopyObject().(client.Object)
-	err := c.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, existing)
+	err := r.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, existing)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return c.Create(ctx, obj)
+			return r.Create(ctx, obj)
 		}
 		return err
 	}
 	obj.SetResourceVersion(existing.GetResourceVersion())
-	return c.Update(ctx, obj)
+	return r.Update(ctx, obj)
 }
 
 func toCoreTolerations(in []csiv1alpha1.TolerationSpec) []corev1.Toleration {

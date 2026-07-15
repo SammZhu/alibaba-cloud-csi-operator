@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	csiv1alpha1 "github.com/SammZhu/alibaba-cloud-csi-operator/api/v1alpha1"
@@ -61,9 +62,12 @@ func newScheme(t *testing.T) *runtime.Scheme {
 // defaultCR returns a minimal AlibabaCloudCSIDriver CR for testing.
 func defaultCR() *csiv1alpha1.AlibabaCloudCSIDriver {
 	return &csiv1alpha1.AlibabaCloudCSIDriver{
+		// AlibabaCloudCSIDriver is cluster-scoped (scope=Cluster), so it has no
+		// namespace — matching how the API stores it. A spurious namespace here
+		// would make SetControllerReference treat the owner as namespaced and
+		// reject owning the cluster-scoped children (CSIDriver/StorageClass/RBAC).
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "cluster",
-			Namespace: operatorNamespace,
+			Name: "cluster",
 		},
 		Spec: csiv1alpha1.AlibabaCloudCSIDriverSpec{
 			Disk: csiv1alpha1.DiskSpec{
@@ -103,7 +107,7 @@ func TestReconcile_CRNotFound(t *testing.T) {
 	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
 
 	res, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: "cluster", Namespace: operatorNamespace},
+		NamespacedName: types.NamespacedName{Name: "cluster"},
 	})
 	if err != nil {
 		t.Fatalf("expected no error for not-found CR, got %v", err)
@@ -891,4 +895,56 @@ func TestImageFor(t *testing.T) {
 	if got := imageFor("RELATED_IMAGE_OVERRIDE_TEST", "default-img"); got != "mirror.example/x@sha256:abc" {
 		t.Errorf("imageFor (set) = %q; want the override", got)
 	}
+}
+
+// ── Owner references (garbage-collected teardown) ────────────────────────────────
+
+// TestReconcile_SetsOwnerReferences verifies that every resource the operator
+// creates carries a controller owner reference back to the AlibabaCloudCSIDriver
+// CR, so that `oc delete alibabacloudcsidriver cluster` garbage-collects them
+// instead of orphaning them. The CR is cluster-scoped, so it can own both
+// cluster-scoped children (CSIDriver / StorageClass / ClusterRole[Binding]) and
+// namespaced ones (Deployment / DaemonSet / ServiceAccount in kube-system).
+func TestReconcile_SetsOwnerReferences(t *testing.T) {
+	scheme := newScheme(t)
+	cr := defaultCR()
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cr).
+		WithStatusSubresource(cr).
+		Build()
+	r := &AlibabaCloudCSIDriverReconciler{Client: k8sClient, Scheme: scheme}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ctx := context.Background()
+	ownedBy := func(t *testing.T, obj client.Object, kind string) {
+		t.Helper()
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, obj); err != nil {
+			t.Fatalf("%s %q not created: %v", kind, obj.GetName(), err)
+		}
+		ref := metav1.GetControllerOf(obj)
+		if ref == nil {
+			t.Fatalf("%s %q has no controller owner reference", kind, obj.GetName())
+		}
+		if ref.Kind != "AlibabaCloudCSIDriver" || ref.Name != cr.Name {
+			t.Errorf("%s %q owner = %s/%s, want AlibabaCloudCSIDriver/%s", kind, obj.GetName(), ref.Kind, ref.Name, cr.Name)
+		}
+	}
+
+	// Cluster-scoped children.
+	ownedBy(t, &storagev1.CSIDriver{ObjectMeta: metav1.ObjectMeta{Name: diskDriverName}}, "CSIDriver")
+	ownedBy(t, &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "alicloud-disk-efficiency"}}, "StorageClass")
+	ownedBy(t, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "alibaba-cloud-csi-role"}}, "ClusterRole")
+	ownedBy(t, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "alibaba-cloud-csi-binding"}}, "ClusterRoleBinding")
+
+	// Namespaced children (kube-system).
+	ownedBy(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: serviceAccountName, Namespace: operatorNamespace}}, "ServiceAccount")
+	ownedBy(t, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "csi-disk-controller", Namespace: operatorNamespace}}, "Deployment")
+	ownedBy(t, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "csi-disk-node", Namespace: operatorNamespace}}, "DaemonSet")
 }

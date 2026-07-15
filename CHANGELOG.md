@@ -6,6 +6,21 @@ semantic versioning within the `v0.1.x` line.
 
 ## [Unreleased]
 
+## [v0.1.11]
+- **Clean uninstall via owner references**: every resource the operator creates —
+  the cluster-scoped CSIDriver / StorageClass / ClusterRole / ClusterRoleBinding /
+  VolumeSnapshotClass and the namespaced controller Deployments / node DaemonSets /
+  ServiceAccount in `kube-system` — now carries a controller owner reference back to
+  the (cluster-scoped) `AlibabaCloudCSIDriver` CR. Deleting the CR
+  (`oc delete alibabacloudcsidriver cluster`) now garbage-collects all of them
+  instead of orphaning them. Because GC is a control-plane function, teardown works
+  even if the operator Pod is already gone. Existing resources from an older
+  operator version are **adopted** on the next reconcile (the owner reference is
+  added in place), so upgraded clusters get clean teardown too. Fixes the leftover
+  CSIDriver/StorageClass/RBAC/workload objects observed after uninstall on
+  OpenShift 4.22 (CRC). As a side effect the previously-inert `Owns()` watches now
+  fire, giving the workloads self-healing on drift.
+
 ## [v0.1.10]
 - **OperatorHub listing metadata** (bundle-only; operand image is byte-identical to
   v0.1.9, reusing the same digest — no rebuild):

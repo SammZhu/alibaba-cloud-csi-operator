@@ -6,6 +6,18 @@ semantic versioning within the `v0.1.x` line.
 
 ## [Unreleased]
 
+## [v0.1.10]
+- **OperatorHub listing metadata** (bundle-only; operand image is byte-identical to
+  v0.1.9, reusing the same digest — no rebuild):
+  - raise the capability level from `Basic Install` to **`Seamless Upgrades`** — the
+    operator ships a published, tested OLM upgrade graph;
+  - add **Documentation** (QUICKSTART) and **Support / Report an Issue** (GitHub
+    issues) entries to `spec.links` so the console's documentation/support fields
+    resolve instead of showing N/A.
+  - Update graph: `spec.replaces: alibaba-cloud-csi-operator.v0.1.9` (same OCP range
+    `v4.21-v4.22`, so `check_replaces_availability` is satisfied); the v0.1.8 skip is
+    preserved by v0.1.9's already-published CSV.
+
 ## [v0.1.9]
 - **OpenShift 4.21/4.22 support** via `com.redhat.openshift.versions: v4.21-v4.22`.
   Code is identical to v0.1.8; this is a bundle-metadata release that adds the

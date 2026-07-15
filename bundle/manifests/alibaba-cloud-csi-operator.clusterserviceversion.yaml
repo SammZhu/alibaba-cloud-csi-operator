@@ -59,12 +59,12 @@ metadata:
           }
         }
       ]
-    capabilities: Basic Install
+    capabilities: Seamless Upgrades
     categories: Storage
     certified: "false"
     com.redhat.openshift.versions: v4.21-v4.22
     containerImage: quay.io/samzhu/alibaba-cloud-csi-operator@sha256:03a18eaf0af5f90a260f23f18c2d61270a2ffebe19cfc5e8b866f5b12cfe0636
-    createdAt: "2026-06-23T16:15:00Z"
+    createdAt: "2026-07-15T00:00:00Z"
     repository: https://github.com/SammZhu/alibaba-cloud-csi-operator
     description: Installs and manages Alibaba Cloud CSI drivers (Disk/NAS/OSS) on
       OpenShift External Platform clusters using RAM Role instance principal authentication.
@@ -79,7 +79,7 @@ metadata:
     operators.operatorframework.io/builder: operator-sdk-v1.42.2
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
     support: Sam Choo
-  name: alibaba-cloud-csi-operator.v0.1.9
+  name: alibaba-cloud-csi-operator.v0.1.10
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -490,10 +490,14 @@ spec:
   - nas
   - oss
   links:
-  - name: Upstream CSI Driver
-    url: https://github.com/kubernetes-sigs/alibaba-cloud-csi-driver
+  - name: Documentation
+    url: https://github.com/SammZhu/alibaba-cloud-csi-operator/blob/main/docs/QUICKSTART.md
   - name: Source Code
     url: https://github.com/SammZhu/alibaba-cloud-csi-operator
+  - name: Support / Report an Issue
+    url: https://github.com/SammZhu/alibaba-cloud-csi-operator/issues
+  - name: Upstream CSI Driver
+    url: https://github.com/kubernetes-sigs/alibaba-cloud-csi-driver
   maintainers:
   - email: zhuhe+csi-operator@msn.com
     name: Sam Choo
@@ -517,6 +521,5 @@ spec:
     name: csi-node-driver-registrar
   - image: registry.k8s.io/sig-storage/livenessprobe@sha256:4dc0b87ccd69f9865b89234d8555d3a614ab0a16ed94a3016ffd27f8106132ce
     name: livenessprobe
-  skips:
-  - alibaba-cloud-csi-operator.v0.1.8
-  version: 0.1.9
+  replaces: alibaba-cloud-csi-operator.v0.1.9
+  version: 0.1.10

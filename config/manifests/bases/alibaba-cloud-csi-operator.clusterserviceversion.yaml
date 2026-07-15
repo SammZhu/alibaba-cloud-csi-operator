@@ -3,7 +3,7 @@ kind: ClusterServiceVersion
 metadata:
   annotations:
     alm-examples: '[]'
-    capabilities: Basic Install
+    capabilities: Seamless Upgrades
     categories: Storage
     certified: "false"
     com.redhat.openshift.versions: v4.21-v4.22
@@ -211,10 +211,14 @@ spec:
   - nas
   - oss
   links:
-  - name: Upstream CSI Driver
-    url: https://github.com/kubernetes-sigs/alibaba-cloud-csi-driver
+  - name: Documentation
+    url: https://github.com/SammZhu/alibaba-cloud-csi-operator/blob/main/docs/QUICKSTART.md
   - name: Source Code
     url: https://github.com/SammZhu/alibaba-cloud-csi-operator
+  - name: Support / Report an Issue
+    url: https://github.com/SammZhu/alibaba-cloud-csi-operator/issues
+  - name: Upstream CSI Driver
+    url: https://github.com/kubernetes-sigs/alibaba-cloud-csi-driver
   maintainers:
   - email: zhuhe+csi-operator@msn.com
     name: Sam Choo

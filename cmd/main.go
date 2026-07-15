@@ -205,6 +205,9 @@ func main() {
 	if err := (&controller.AlibabaCloudCSIDriverReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		// Config drives the fresh-discovery fallback in sccAvailable() so a stale
+		// cached RESTMapper cannot mask the OpenShift SCC API (see sccAvailable).
+		Config: mgr.GetConfig(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AlibabaCloudCSIDriver")
 		os.Exit(1)

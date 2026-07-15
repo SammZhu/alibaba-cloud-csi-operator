@@ -36,6 +36,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -112,6 +114,12 @@ var (
 type AlibabaCloudCSIDriverReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Config is the manager's rest.Config. sccAvailable() uses it to build a
+	// fresh discovery client when the cached RESTMapper misses the SCC API, so a
+	// stale/incomplete cached discovery (e.g. after an operator restart under node
+	// DiskPressure) cannot produce a false PSA fallback on OpenShift. Nil in unit
+	// tests, which drive detection purely through a fake RESTMapper.
+	Config *rest.Config
 }
 
 // +kubebuilder:rbac:groups=csi.alibabacloud.com,resources=alibabacloudcsidrivers,verbs=get;list;watch;create;update;patch;delete
@@ -312,10 +320,50 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureSCCBinding(ctx context.Context, 
 // SecurityContextConstraints API (i.e. we are on OpenShift). On OpenShift the
 // privileged node DaemonSet is admitted via the privileged SCC; elsewhere we
 // fall back to Pod Security Admission (a privileged namespace label).
+//
+// A single cached-RESTMapper miss is NOT trusted as "not OpenShift". The
+// manager's RESTMapper is a lazy dynamic mapper that discovers on demand and
+// caches; if its first discovery ran while the apiserver was degraded (observed
+// 2026-07-15: operator restarted under node DiskPressure), it caches the SCC
+// miss and never reliably reloads — so detection stays false for the pod's
+// lifetime, the privileged SCC binding is never created, and the node DaemonSet
+// can be denied admission → mount failures. To avoid that false negative we
+// confirm a mapper miss against a FRESH discovery client before concluding the
+// SCC API is absent. Only a fresh discovery that also finds no SCC (a genuine
+// non-OpenShift cluster) falls through to PSA.
 func (r *AlibabaCloudCSIDriverReconciler) sccAvailable() bool {
+	// Fast path: the cached mapper already knows the SCC API. A positive result
+	// is authoritative (discovery only ever adds resources, never falsely invents
+	// one), so trust it and skip the discovery round-trip.
 	gk := schema.GroupKind{Group: "security.openshift.io", Kind: "SecurityContextConstraints"}
-	_, err := r.RESTMapper().RESTMapping(gk)
-	return err == nil
+	if _, err := r.RESTMapper().RESTMapping(gk); err == nil {
+		return true
+	}
+
+	// Cached mapper missed. This is either a genuine non-OpenShift cluster or a
+	// stale/incomplete cached discovery. Without a rest.Config (unit tests) we
+	// can only honour the mapper result.
+	if r.Config == nil {
+		return false
+	}
+
+	// Re-check against a fresh discovery client, bypassing the cached mapper.
+	dc, err := discovery.NewDiscoveryClientForConfig(r.Config)
+	if err != nil {
+		return false
+	}
+	resList, err := dc.ServerResourcesForGroupVersion("security.openshift.io/v1")
+	if err != nil {
+		// A genuine non-OpenShift cluster returns a not-found error for the group;
+		// any other transient error also safely leaves us on the PSA fallback.
+		return false
+	}
+	for _, res := range resList.APIResources {
+		if res.Kind == "SecurityContextConstraints" {
+			return true
+		}
+	}
+	return false
 }
 
 // ensurePrivilegedNamespacePSA labels the operator namespace so Pod Security

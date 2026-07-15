@@ -18,7 +18,10 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -30,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -854,6 +858,56 @@ func TestSCCAvailable(t *testing.T) {
 	ro := &AlibabaCloudCSIDriverReconciler{Client: ocp, Scheme: scheme}
 	if !ro.sccAvailable() {
 		t.Error("sccAvailable() = false with the SCC API present; want true (SCC binding)")
+	}
+}
+
+// discoveryServer starts an httptest apiserver-discovery stub. If serveSCC is
+// true it serves security.openshift.io/v1 with the SecurityContextConstraints
+// resource (like OpenShift); otherwise it 404s the group like vanilla k8s.
+func discoveryServer(t *testing.T, serveSCC bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/apis/security.openshift.io/v1" && serveSCC {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&metav1.APIResourceList{
+				GroupVersion: "security.openshift.io/v1",
+				APIResources: []metav1.APIResource{
+					{Name: "securitycontextconstraints", Kind: "SecurityContextConstraints", Namespaced: false},
+				},
+			})
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestSCCAvailable_StaleMapperRecoversViaDiscovery is the regression test for the
+// 2026-07-15 CRC false negative: the cached RESTMapper misses the SCC API
+// (stale/incomplete discovery after an operator restart under DiskPressure), but
+// the cluster really is OpenShift. sccAvailable() must confirm via a fresh
+// discovery client and return true so the privileged SCC binding is created.
+func TestSCCAvailable_StaleMapperRecoversViaDiscovery(t *testing.T) {
+	scheme := newScheme(t)
+
+	// A cached mapper that (wrongly) knows nothing about SCC — the stale state.
+	staleMapper := meta.NewDefaultRESTMapper(nil)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithRESTMapper(staleMapper).Build()
+
+	// OpenShift cluster: fresh discovery DOES serve the SCC API.
+	srv := discoveryServer(t, true)
+	r := &AlibabaCloudCSIDriverReconciler{Client: c, Scheme: scheme, Config: &rest.Config{Host: srv.URL}}
+	if !r.sccAvailable() {
+		t.Error("sccAvailable() = false despite fresh discovery serving the SCC API; stale-mapper false negative not recovered")
+	}
+
+	// Genuine non-OpenShift cluster: mapper misses AND fresh discovery 404s the
+	// group → must stay false (PSA fallback), not spuriously flip to true.
+	srvNoSCC := discoveryServer(t, false)
+	rNo := &AlibabaCloudCSIDriverReconciler{Client: c, Scheme: scheme, Config: &rest.Config{Host: srvNoSCC.URL}}
+	if rNo.sccAvailable() {
+		t.Error("sccAvailable() = true on a cluster without the SCC API; want false (PSA fallback)")
 	}
 }
 

@@ -6,6 +6,18 @@ semantic versioning within the `v0.1.x` line.
 
 ## [Unreleased]
 
+## [v0.1.13]
+- **Robust OpenShift SCC detection**: `sccAvailable()` no longer trusts only the
+  manager's cached RESTMapper. If the operator Pod's first API discovery ran while
+  the apiserver was degraded (observed on OpenShift 4.22 / CRC when the node was
+  under DiskPressure and the operator restarted), the stale cached mapper missed
+  `security.openshift.io`, so the operator skipped the privileged SCC binding and
+  fell back to Pod Security Admission on a real OpenShift cluster — which can get
+  the node CSI DaemonSet denied privileged admission (mount failures). A cached
+  mapper hit stays authoritative; a miss is now re-checked against a fresh
+  discovery client before concluding the SCC API is absent. Genuine non-OpenShift
+  clusters still take the PSA path.
+
 ## [v0.1.12]
 - **Clean uninstall via owner references**: every resource the operator creates —
   the cluster-scoped CSIDriver / StorageClass / ClusterRole / ClusterRoleBinding /

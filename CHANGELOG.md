@@ -6,6 +6,20 @@ semantic versioning within the `v0.1.x` line.
 
 ## [Unreleased]
 
+## [v0.1.14]
+- **Backport the fixes to OpenShift 4.15–4.20** (bundle-metadata only; operand image
+  is byte-identical to v0.1.13, same digest — no rebuild). Until now the fixes only
+  reached 4.21–4.22: v0.1.8 was the 4.15–4.20 head (old code) while v0.1.9→v0.1.13
+  formed a disjoint 4.21–4.22 track. This release widens
+  `com.redhat.openshift.versions` to **`v4.15-v4.22`** so every supported OpenShift
+  gets the owner-reference garbage collection (clean uninstall) and the robust SCC
+  detection. Update graph: **`spec.skips: [v0.1.8, v0.1.13]`** — a single channel
+  cannot have two heads, so instead of a 4.15–4.20-only bundle that would replace
+  v0.1.8 (and leave v0.1.13 as a second head), v0.1.14 spans the full range and
+  skips both prior heads, becoming the sole head. `skips` avoids the
+  `check_replaces_availability` constraint (a `replaces` target must exist in every
+  target OCP catalog, which v0.1.8/v0.1.13 do not across the widened range).
+
 ## [v0.1.13]
 - **Robust OpenShift SCC detection**: `sccAvailable()` no longer trusts only the
   manager's cached RESTMapper. If the operator Pod's first API discovery ran while

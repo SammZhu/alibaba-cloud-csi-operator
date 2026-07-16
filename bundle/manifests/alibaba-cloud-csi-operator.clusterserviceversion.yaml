@@ -62,7 +62,7 @@ metadata:
     capabilities: Seamless Upgrades
     categories: Storage
     certified: "false"
-    com.redhat.openshift.versions: v4.21-v4.22
+    com.redhat.openshift.versions: v4.15-v4.22
     containerImage: quay.io/samzhu/alibaba-cloud-csi-operator@sha256:64cfe326c1d15754963e5c927aa5ccbc2f54078589aa3579856f57de73a3e1dd
     createdAt: "2026-07-15T00:00:00Z"
     repository: https://github.com/SammZhu/alibaba-cloud-csi-operator
@@ -79,7 +79,7 @@ metadata:
     operators.operatorframework.io/builder: operator-sdk-v1.42.2
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
     support: Sam Choo
-  name: alibaba-cloud-csi-operator.v0.1.13
+  name: alibaba-cloud-csi-operator.v0.1.14
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -521,5 +521,7 @@ spec:
     name: csi-node-driver-registrar
   - image: registry.k8s.io/sig-storage/livenessprobe@sha256:4dc0b87ccd69f9865b89234d8555d3a614ab0a16ed94a3016ffd27f8106132ce
     name: livenessprobe
-  replaces: alibaba-cloud-csi-operator.v0.1.10
-  version: 0.1.13
+  skips:
+  - alibaba-cloud-csi-operator.v0.1.8
+  - alibaba-cloud-csi-operator.v0.1.13
+  version: 0.1.14

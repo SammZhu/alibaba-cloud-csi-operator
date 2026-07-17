@@ -122,6 +122,14 @@ spec:
         effect: NoSchedule
 ```
 
+> **Before you apply this CR**, know that the operator reports `Available=True`
+> even when the driver can't actually provision. The common gotchas — it only
+> provisions on **Alibaba Cloud ECS nodes** (off-cloud, PVCs stay `Pending`);
+> `defaultStorageClass: true` can collide with an existing cluster-default
+> StorageClass; a `replicas: 2` controller keeps one Pod `Pending` on a
+> single-node cluster; the CR is **cluster-scoped** so `namespace` is ignored —
+> are covered in [QUICKSTART § Use it for real](docs/QUICKSTART.md#2-use-it-for-real).
+
 ## Authentication
 
 The operator uses **RAM Role Instance Principal** — no AK/SK required:

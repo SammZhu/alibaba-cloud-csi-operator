@@ -69,8 +69,28 @@ kubectl apply -f 04-csi-subscription.yaml
 kubectl apply -f 04-csi-driver-cr.yaml
 
 # 3. Verify:
-kubectl get alicsid -n kube-system   # DISKREADY=true AVAILABLE=True
+kubectl get alicsid   # DISKREADY=true AVAILABLE=True (cluster-scoped — no -n)
 ```
+
+> **Gotchas when applying the CR** — the operator reports `Available=True` even
+> when these aren't met, so check them yourself:
+>
+> - **Volumes are only provisioned on Alibaba Cloud ECS nodes.** The driver calls
+>   ECS APIs through the node RAM role; **off** Alibaba Cloud (e.g. a laptop CRC)
+>   the operator reconciles fine and reports `Available=True`, but PVCs stay
+>   `Pending` — there is no cloud backend. Real provisioning needs ECS nodes
+>   carrying the [RAM-role permissions](../README.md#authentication) below.
+> - **`defaultStorageClass: true` makes a cluster-default StorageClass.** If the
+>   cluster already has one (e.g. CRC's `crc-csi-hostpath-provisioner`), you now
+>   have *two* defaults — Kubernetes warns and PVCs without an explicit
+>   `storageClassName` become ambiguous. Unset the old default, or set this to
+>   `false`.
+> - **Single-node clusters:** the controller runs `replicas: 2` with pod
+>   anti-affinity, so one replica stays `Pending` (two can't land on one node).
+>   That's expected — the operator's `Available=True` is the health signal, not
+>   controller Pod readiness. Drop to `replicas: 1` to silence it.
+> - **The CR is cluster-scoped** (`scope: Cluster`): a `namespace:` field is
+>   ignored, and the driver always deploys into `kube-system` regardless.
 
 - **RAM permissions** the node role needs (attach/detach/create/resize/snapshot):
   see the [README § Authentication](../README.md#authentication).

@@ -1002,3 +1002,55 @@ func TestReconcile_SetsOwnerReferences(t *testing.T) {
 	ownedBy(t, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "csi-disk-controller", Namespace: operatorNamespace}}, "Deployment")
 	ownedBy(t, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "csi-disk-node", Namespace: operatorNamespace}}, "DaemonSet")
 }
+
+func TestDriverEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		spec csiv1alpha1.AlibabaCloudCSIDriverSpec
+		want []corev1.EnvVar
+	}{
+		{
+			name: "nothing configured leaves the driver's defaults",
+			want: nil,
+		},
+		{
+			name: "ecsEndpoint only (pre-existing behaviour)",
+			spec: csiv1alpha1.AlibabaCloudCSIDriverSpec{ECSEndpoint: "ecs-vpc.cn-hangzhou.aliyuncs.com"},
+			want: []corev1.EnvVar{{Name: "ECS_ENDPOINT", Value: "ecs-vpc.cn-hangzhou.aliyuncs.com"}},
+		},
+		{
+			// What a private cloud actually needs: an endpoint the environment
+			// serves, plain HTTP (its gateway certificate is signed by the
+			// environment's own CA), and the tenancy headers.
+			name: "extraEnv passes through alongside ecsEndpoint",
+			spec: csiv1alpha1.AlibabaCloudCSIDriverSpec{
+				ECSEndpoint: "ecs-internal.cloud.example.com",
+				ExtraEnv: []csiv1alpha1.EnvVarSpec{
+					{Name: "NAS_ENDPOINT", Value: "nas-internal.cloud.example.com"},
+					{Name: "ALICLOUD_CLIENT_SCHEME", Value: "HTTP"},
+					{Name: "ALIBABA_CLOUD_HTTP_HEADERS", Value: "x-acs-organizationid: org-1"},
+				},
+			},
+			want: []corev1.EnvVar{
+				{Name: "NAS_ENDPOINT", Value: "nas-internal.cloud.example.com"},
+				{Name: "ALICLOUD_CLIENT_SCHEME", Value: "HTTP"},
+				{Name: "ALIBABA_CLOUD_HTTP_HEADERS", Value: "x-acs-organizationid: org-1"},
+				{Name: "ECS_ENDPOINT", Value: "ecs-internal.cloud.example.com"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := driverEnv(&csiv1alpha1.AlibabaCloudCSIDriver{Spec: tt.spec})
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d vars, want %d: %+v", len(got), len(tt.want), got)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("[%d] got %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

@@ -220,6 +220,19 @@ type TolerationSpec struct {
 	Effect string `json:"effect,omitempty"`
 }
 
+// EnvVarSpec mirrors the name/value half of corev1.EnvVar, following the same
+// convention as TolerationSpec above.  Only literal values are supported —
+// valueFrom would let the CR pull in arbitrary secrets, which is a bigger
+// surface than configuring a driver needs.
+type EnvVarSpec struct {
+	// Name of the environment variable.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Value of the environment variable.
+	// +optional
+	Value string `json:"value,omitempty"`
+}
+
 // AlibabaCloudCSIDriverSpec defines the desired state of AlibabaCloudCSIDriver.
 type AlibabaCloudCSIDriverSpec struct {
 	// Disk configures the Alibaba Cloud Disk (EBS/cloud disk) CSI driver.
@@ -247,6 +260,34 @@ type AlibabaCloudCSIDriverSpec struct {
 	// Empty = the driver's default public endpoint.
 	// +optional
 	ECSEndpoint string `json:"ecsEndpoint,omitempty"`
+
+	// ExtraEnv is appended to every csi-plugin container.
+	//
+	// The driver exposes a lot of its behaviour through environment variables —
+	// NAS_ENDPOINT, ALICLOUD_CLIENT_SCHEME, ALIBABA_CLOUD_HTTP_HEADERS,
+	// ECS_HEADERS, STS_ENDPOINT and more — and the set grows with each release.
+	// Mirroring each one as its own field would leave this API permanently
+	// behind the driver it configures, so pass them through instead.  (ECSEndpoint
+	// above predates this and stays for compatibility.)
+	//
+	// This is what makes a private cloud workable.  On Apsara Stack the driver
+	// otherwise builds public-cloud endpoints that do not resolve, and its HTTPS
+	// requests fail verification because the gateway's certificate is signed by
+	// the environment's own CA:
+	//
+	//   - name: NAS_ENDPOINT
+	//     value: nas-internal.cloud.<env>.com
+	//   - name: ALICLOUD_CLIENT_SCHEME
+	//     value: HTTP
+	//   - name: ALIBABA_CLOUD_HTTP_HEADERS
+	//     value: |
+	//       x-acs-organizationid: org-xxxx
+	//       x-acs-resourcegroupid: rs-xxxx
+	//
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	ExtraEnv []EnvVarSpec `json:"extraEnv,omitempty"`
 
 	// Auth configures how the CSI driver authenticates to Alibaba Cloud APIs.
 	// +optional

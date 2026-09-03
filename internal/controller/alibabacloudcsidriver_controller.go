@@ -1402,7 +1402,18 @@ func extraEnv(cr *csiv1alpha1.AlibabaCloudCSIDriver) []corev1.EnvVar {
 	}
 	env := make([]corev1.EnvVar, 0, len(cr.Spec.ExtraEnv))
 	for _, e := range cr.Spec.ExtraEnv {
-		env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
+		v := corev1.EnvVar{Name: e.Name}
+		if e.SecretKeyRef != nil {
+			v.ValueFrom = &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.SecretKeyRef.Name},
+					Key:                  e.SecretKeyRef.Key,
+				},
+			}
+		} else {
+			v.Value = e.Value
+		}
+		env = append(env, v)
 	}
 	return env
 }

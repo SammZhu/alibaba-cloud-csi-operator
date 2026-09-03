@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -1019,6 +1020,27 @@ func TestDriverEnv(t *testing.T) {
 			want: []corev1.EnvVar{{Name: "ECS_ENDPOINT", Value: "ecs-vpc.cn-hangzhou.aliyuncs.com"}},
 		},
 		{
+			// Credentials must not be literals in a cluster-scoped CR.  The
+			// driver's provider chain puts env AK/SK ahead of the node RAM role,
+			// which is how a deployment moves off instance credentials.
+			name: "secretKeyRef becomes a ValueFrom, not a literal",
+			spec: csiv1alpha1.AlibabaCloudCSIDriverSpec{
+				ExtraEnv: []csiv1alpha1.EnvVarSpec{{
+					Name:         "ALIBABA_CLOUD_ACCESS_KEY_ID",
+					SecretKeyRef: &csiv1alpha1.SecretKeySelector{Name: "alibaba-csi-creds", Key: "access_key_id"},
+				}},
+			},
+			want: []corev1.EnvVar{{
+				Name: "ALIBABA_CLOUD_ACCESS_KEY_ID",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "alibaba-csi-creds"},
+						Key:                  "access_key_id",
+					},
+				},
+			}},
+		},
+		{
 			// What a private cloud actually needs: an endpoint the environment
 			// serves, plain HTTP (its gateway certificate is signed by the
 			// environment's own CA), and the tenancy headers.
@@ -1047,7 +1069,7 @@ func TestDriverEnv(t *testing.T) {
 				t.Fatalf("got %d vars, want %d: %+v", len(got), len(tt.want), got)
 			}
 			for i := range tt.want {
-				if got[i] != tt.want[i] {
+				if !reflect.DeepEqual(got[i], tt.want[i]) {
 					t.Errorf("[%d] got %+v, want %+v", i, got[i], tt.want[i])
 				}
 			}

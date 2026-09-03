@@ -269,20 +269,45 @@ spec:
                 items:
                   description: |-
                     EnvVarSpec mirrors the name/value half of corev1.EnvVar, following the same
-                    convention as TolerationSpec above.  Only literal values are supported —
-                    valueFrom would let the CR pull in arbitrary secrets, which is a bigger
-                    surface than configuring a driver needs.
+                    convention as TolerationSpec above.
+
+                    A literal value or a key from a Secret — and nothing else.  The full
+                    corev1.EnvVarSource would also expose fieldRef and resourceFieldRef, which
+                    configuring a driver has no use for; a Secret key is the one indirection it
+                    genuinely needs, because the alternative is credentials sitting in plain text
+                    in a cluster-scoped CR.
                   properties:
                     name:
                       description: Name of the environment variable.
                       minLength: 1
                       type: string
+                    secretKeyRef:
+                      description: |-
+                        SecretKeyRef takes the value from a key of a Secret in the driver's own
+                        namespace.  Use this for credentials.
+                      properties:
+                        key:
+                          description: Key within that Secret.
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name of the Secret, in the namespace the driver
+                            runs in.
+                          minLength: 1
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
                     value:
-                      description: Value of the environment variable.
+                      description: Value of the environment variable, as a literal.
                       type: string
                   required:
                   - name
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of value or secretKeyRef must be set
+                    rule: has(self.value) != has(self.secretKeyRef)
                 type: array
                 x-kubernetes-list-map-keys:
                 - name

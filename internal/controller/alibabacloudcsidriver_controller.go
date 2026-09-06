@@ -511,7 +511,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskControllerDeployment(ctx con
 				{Name: "CSI_ENDPOINT", Value: "unix:///csi/csi.sock"},
 				{Name: "MAX_VOLUMES_PERNODE", Value: "15"},
 				{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
-			}, ecsEndpointEnv(cr)...),
+			}, driverEnv(cr)...),
 			VolumeMounts: []corev1.VolumeMount{socketMount},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -644,7 +644,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureDiskNodeDaemonSet(ctx context.Co
 								{Name: "MAX_VOLUMES_PERNODE", Value: "15"},
 								{Name: "DISK_ALLOW_ALL_TYPE", Value: "true"},
 								{Name: "KUBE_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
-							}, ecsEndpointEnv(cr)...),
+							}, driverEnv(cr)...),
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "kubelet-dir", MountPath: "/var/lib/kubelet", MountPropagation: mountPropagation(corev1.MountPropagationBidirectional)},
 								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/diskplugin.csi.alibabacloud.com"},
@@ -839,7 +839,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASControllerDeployment(ctx cont
 			Env: append([]corev1.EnvVar{
 				{Name: "CSI_ENDPOINT", Value: "unix:///csi/csi.sock"},
 				{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
-			}, ecsEndpointEnv(cr)...),
+			}, driverEnv(cr)...),
 			VolumeMounts: []corev1.VolumeMount{socketMount},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -929,7 +929,7 @@ func (r *AlibabaCloudCSIDriverReconciler) ensureNASNodeDaemonSet(ctx context.Con
 								{Name: "RAM_ROLE_TOKEN", Value: ramTokenVersion},
 								{Name: "SERVICE_PORT", Value: "11261"},
 								{Name: "KUBE_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
-							}, ecsEndpointEnv(cr)...),
+							}, driverEnv(cr)...),
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "kubelet-dir", MountPath: "/var/lib/kubelet", MountPropagation: mountPropagation(corev1.MountPropagationBidirectional)},
 								{Name: "plugin-dir", MountPath: "/var/lib/kubelet/plugins/nasplugin.csi.alibabacloud.com"},
@@ -1379,15 +1379,43 @@ func registrarHealthzStartupProbe(port int32) *corev1.Probe {
 
 func mountPropagation(m corev1.MountPropagationMode) *corev1.MountPropagationMode { return &m }
 
-// ecsEndpointEnv returns the ECS_ENDPOINT override (appended to every csi-plugin
-// container) when spec.ecsEndpoint is set — e.g. ecs-vpc.<region>.aliyuncs.com on
-// air-gapped clusters where the default public ECS endpoint is unreachable. Empty
-// spec returns nil so the driver keeps its default public endpoint.
-func ecsEndpointEnv(cr *csiv1alpha1.AlibabaCloudCSIDriver) []corev1.EnvVar {
-	if cr.Spec.ECSEndpoint == "" {
+// driverEnv returns the environment appended to every csi-plugin container:
+// spec.extraEnv, plus the ECS_ENDPOINT override when spec.ecsEndpoint is set
+// (e.g. ecs-vpc.<region>.aliyuncs.com on air-gapped clusters, where the default
+// public endpoint times out and node registration fails on DescribeDisks).
+// Nothing configured returns nil, leaving the driver's own defaults.
+func driverEnv(cr *csiv1alpha1.AlibabaCloudCSIDriver) []corev1.EnvVar {
+	env := extraEnv(cr)
+	if cr.Spec.ECSEndpoint != "" {
+		env = append(env, corev1.EnvVar{Name: "ECS_ENDPOINT", Value: cr.Spec.ECSEndpoint})
+	}
+	return env
+}
+
+// extraEnv passes spec.extraEnv through to every csi-plugin container.  The
+// driver exposes endpoints, scheme and request headers as environment variables
+// (NAS_ENDPOINT, ALICLOUD_CLIENT_SCHEME, ALIBABA_CLOUD_HTTP_HEADERS, ...), which
+// is what makes a private cloud configurable at all — see ExtraEnv's doc.
+func extraEnv(cr *csiv1alpha1.AlibabaCloudCSIDriver) []corev1.EnvVar {
+	if len(cr.Spec.ExtraEnv) == 0 {
 		return nil
 	}
-	return []corev1.EnvVar{{Name: "ECS_ENDPOINT", Value: cr.Spec.ECSEndpoint}}
+	env := make([]corev1.EnvVar, 0, len(cr.Spec.ExtraEnv))
+	for _, e := range cr.Spec.ExtraEnv {
+		v := corev1.EnvVar{Name: e.Name}
+		if e.SecretKeyRef != nil {
+			v.ValueFrom = &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.SecretKeyRef.Name},
+					Key:                  e.SecretKeyRef.Key,
+				},
+			}
+		} else {
+			v.Value = e.Value
+		}
+		env = append(env, v)
+	}
+	return env
 }
 
 func storageClassBindingMode(m storagev1.VolumeBindingMode) *storagev1.VolumeBindingMode { return &m }
